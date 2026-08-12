@@ -1,10 +1,12 @@
 @page "/projects/{projectId:int}"
 @using ContosoDashboard.Services
 @using ContosoDashboard.Models
+@using ContosoDashboard.Shared
 @using Microsoft.AspNetCore.Authorization
 @using System.Security.Claims
 @attribute [Authorize]
 @inject IProjectService ProjectService
+@inject IDocumentService DocumentService
 @inject NavigationManager NavigationManager
 @inject AuthenticationStateProvider AuthenticationStateProvider
 
@@ -151,6 +153,56 @@
                         }
                     </div>
                 </div>
+
+                <div class="card mt-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Project Documents</h5>
+                        @if (project.ProjectManagerId == currentUserId)
+                        {
+                            <button class="btn btn-sm btn-primary" @onclick="OpenUploadModal">
+                                <span class="bi bi-upload" aria-hidden="true"></span> Upload Document
+                            </button>
+                        }
+                    </div>
+                    <div class="card-body">
+                        @if (projectDocuments == null)
+                        {
+                            <p class="text-muted">Loading documents...</p>
+                        }
+                        else if (!projectDocuments.Any())
+                        {
+                            <p class="text-muted">No documents have been uploaded to this project yet.</p>
+                        }
+                        else
+                        {
+                            <div class="table-responsive">
+                                <table class="table table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>Title</th>
+                                            <th>Category</th>
+                                            <th>Uploaded By</th>
+                                            <th>Upload Date</th>
+                                            <th>File Size</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var document in projectDocuments)
+                                        {
+                                            <tr>
+                                                <td>@document.Title</td>
+                                                <td><span class="badge bg-secondary">@document.Category</span></td>
+                                                <td>@document.UploaderName</td>
+                                                <td>@document.UploadDate.ToLocalTime().ToString("MMM dd, yyyy h:mm tt")</td>
+                                                <td>@FormatFileSize(document.FileSizeBytes)</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+                    </div>
+                </div>
             </div>
 
             <div class="col-md-4">
@@ -232,12 +284,20 @@
     }
 </div>
 
+<DocumentUploadModal @ref="_uploadModal"
+                      CurrentUserId="currentUserId"
+                      AvailableProjects="_uploadTargetProjects"
+                      OnUploaded="HandleDocumentUploaded" />
+
 @code {
     [Parameter]
     public int ProjectId { get; set; }
 
     private Project? project;
     private int currentUserId = 0;
+    private List<DocumentSummary>? projectDocuments;
+    private List<Project> _uploadTargetProjects = new();
+    private DocumentUploadModal? _uploadModal;
 
     protected override async Task OnInitializedAsync()
     {
@@ -254,7 +314,13 @@
         {
             project = await ProjectService.GetProjectByIdAsync(ProjectId, currentUserId);
         }
-        
+
+        if (project != null)
+        {
+            _uploadTargetProjects = new List<Project> { project };
+            projectDocuments = (await DocumentService.GetProjectDocumentsAsync(currentUserId, ProjectId)).ToList();
+        }
+
         if (project == null)
         {
             NavigationManager.NavigateTo("/projects");
@@ -304,5 +370,25 @@
             return $"{names[0][0]}{names[1][0]}".ToUpper();
         }
         return displayName.Length > 0 ? displayName[0].ToString().ToUpper() : "?";
+    }
+
+    private void OpenUploadModal()
+    {
+        _uploadModal?.Show(presetProjectId: ProjectId);
+    }
+
+    private async Task HandleDocumentUploaded(UploadedDocumentInfo document)
+    {
+        projectDocuments = (await DocumentService.GetProjectDocumentsAsync(currentUserId, ProjectId)).ToList();
+    }
+
+    private static string FormatFileSize(long bytes)
+    {
+        return bytes switch
+        {
+            < 1024 => $"{bytes} B",
+            < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",
+            _ => $"{bytes / (1024.0 * 1024.0):F1} MB"
+        };
     }
 }

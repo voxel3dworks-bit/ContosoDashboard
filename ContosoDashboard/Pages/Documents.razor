@@ -4,6 +4,7 @@
 @using Microsoft.AspNetCore.Authorization
 @using System.Security.Claims
 @attribute [Authorize]
+@inject IDocumentService DocumentService
 @inject IProjectService ProjectService
 @inject AuthenticationStateProvider AuthenticationStateProvider
 
@@ -19,32 +20,109 @@
         </div>
     </div>
 
-    @if (_uploadedThisSession.Count == 0)
+    <div class="row mb-3 g-2 align-items-end">
+        <div class="col-md-4">
+            <label class="form-label small text-muted">Search</label>
+            <div class="input-group">
+                <input class="form-control" placeholder="Title, description, tags, uploader, project..."
+                       @bind="_searchTerm" @bind:event="oninput" @onkeyup="OnSearchKeyUp" />
+                <button class="btn btn-outline-secondary" @onclick="LoadDocumentsAsync">
+                    <span class="bi bi-search" aria-hidden="true"></span>
+                </button>
+                @if (!string.IsNullOrWhiteSpace(_searchTerm))
+                {
+                    <button class="btn btn-outline-secondary" @onclick="ClearSearch">
+                        <span class="bi bi-x" aria-hidden="true"></span>
+                    </button>
+                }
+            </div>
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small text-muted">Category</label>
+            <select class="form-select" @bind="_query.CategoryFilter" @bind:after="LoadDocumentsAsync">
+                <option value="">All categories</option>
+                @foreach (var category in Models.DocumentCategories.All)
+                {
+                    <option value="@category">@category</option>
+                }
+            </select>
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small text-muted">Project</label>
+            <select class="form-select" @bind="_projectFilterValue" @bind:after="LoadDocumentsAsync">
+                <option value="">All projects</option>
+                @foreach (var project in _availableProjects)
+                {
+                    <option value="@project.ProjectId">@project.Name</option>
+                }
+            </select>
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small text-muted">From</label>
+            <input type="date" class="form-control" @bind="_query.UploadedFrom" @bind:format="yyyy-MM-dd" @bind:after="LoadDocumentsAsync" />
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small text-muted">To</label>
+            <input type="date" class="form-control" @bind="_query.UploadedTo" @bind:format="yyyy-MM-dd" @bind:after="LoadDocumentsAsync" />
+        </div>
+    </div>
+
+    @if (_isLoading)
+    {
+        <p><em>Loading...</em></p>
+    }
+    else if (_documents.Count == 0)
     {
         <div class="alert alert-info">
-            No documents uploaded yet this session. Click "Upload Document" to get started.
+            @if (!string.IsNullOrWhiteSpace(_searchTerm))
+            {
+                <text>No documents match your search.</text>
+            }
+            else
+            {
+                <text>No documents found. Click "Upload Document" to get started.</text>
+            }
         </div>
     }
     else
     {
+        <p class="text-muted small">Showing @_documents.Count of @_totalCount document(s)</p>
         <div class="table-responsive">
             <table class="table table-hover">
                 <thead>
                     <tr>
-                        <th>Title</th>
-                        <th>Category</th>
-                        <th>Upload Date</th>
-                        <th>File Size</th>
+                        <th role="button" @onclick='() => SortByAsync(DocumentSortField.Title)'>
+                            Title @SortIndicator(DocumentSortField.Title)
+                        </th>
+                        <th role="button" @onclick='() => SortByAsync(DocumentSortField.Category)'>
+                            Category @SortIndicator(DocumentSortField.Category)
+                        </th>
+                        <th role="button" @onclick='() => SortByAsync(DocumentSortField.UploadDate)'>
+                            Upload Date @SortIndicator(DocumentSortField.UploadDate)
+                        </th>
+                        <th role="button" @onclick='() => SortByAsync(DocumentSortField.FileSizeBytes)'>
+                            File Size @SortIndicator(DocumentSortField.FileSizeBytes)
+                        </th>
+                        <th>Project</th>
+                        @if (!string.IsNullOrWhiteSpace(_searchTerm))
+                        {
+                            <th>Uploaded By</th>
+                        }
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var document in _uploadedThisSession.OrderByDescending(d => d.UploadDate))
+                    @foreach (var document in _documents)
                     {
                         <tr>
                             <td>@document.Title</td>
                             <td><span class="badge bg-secondary">@document.Category</span></td>
                             <td>@document.UploadDate.ToLocalTime().ToString("MMM dd, yyyy h:mm tt")</td>
                             <td>@FormatFileSize(document.FileSizeBytes)</td>
+                            <td>@(document.ProjectName ?? "Personal")</td>
+                            @if (!string.IsNullOrWhiteSpace(_searchTerm))
+                            {
+                                <td>@document.UploaderName</td>
+                            }
                         </tr>
                     }
                 </tbody>
@@ -61,8 +139,18 @@
 @code {
     private int _currentUserId;
     private List<Models.Project> _availableProjects = new();
-    private List<UploadedDocumentInfo> _uploadedThisSession = new();
+    private List<DocumentSummary> _documents = new();
+    private int _totalCount;
+    private bool _isLoading = true;
+    private string _searchTerm = string.Empty;
+    private DocumentQuery _query = new();
     private DocumentUploadModal? _uploadModal;
+
+    private int? _projectFilterValue
+    {
+        get => _query.ProjectIdFilter;
+        set => _query.ProjectIdFilter = value;
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -72,7 +160,62 @@
         {
             _currentUserId = userId;
             _availableProjects = await ProjectService.GetUserProjectsAsync(_currentUserId);
+            await LoadDocumentsAsync();
         }
+    }
+
+    private async Task LoadDocumentsAsync()
+    {
+        _isLoading = true;
+        StateHasChanged();
+
+        var result = string.IsNullOrWhiteSpace(_searchTerm)
+            ? await DocumentService.GetMyDocumentsAsync(_currentUserId, _query)
+            : await DocumentService.SearchAsync(_currentUserId, _searchTerm.Trim(), _query);
+
+        _documents = result.Items.ToList();
+        _totalCount = result.TotalCount;
+        _isLoading = false;
+        StateHasChanged();
+    }
+
+    private async Task OnSearchKeyUp(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await LoadDocumentsAsync();
+        }
+    }
+
+    private async Task ClearSearch()
+    {
+        _searchTerm = string.Empty;
+        await LoadDocumentsAsync();
+    }
+
+    private async Task SortByAsync(DocumentSortField field)
+    {
+        if (_query.SortBy == field)
+        {
+            _query.SortDescending = !_query.SortDescending;
+        }
+        else
+        {
+            _query.SortBy = field;
+            _query.SortDescending = false;
+        }
+
+        await LoadDocumentsAsync();
+    }
+
+    private string SortIndicator(DocumentSortField field)
+    {
+        if (_query.SortBy != field)
+        {
+            return string.Empty;
+        }
+
+        return _query.SortDescending ? "▼" : "▲";
     }
 
     private void OpenUploadModal()
@@ -80,10 +223,9 @@
         _uploadModal?.Show();
     }
 
-    private void HandleDocumentUploaded(UploadedDocumentInfo document)
+    private async Task HandleDocumentUploaded(UploadedDocumentInfo document)
     {
-        _uploadedThisSession.Add(document);
-        StateHasChanged();
+        await LoadDocumentsAsync();
     }
 
     private static string FormatFileSize(long bytes)

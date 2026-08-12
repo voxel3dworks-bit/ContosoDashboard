@@ -149,6 +149,114 @@ public class DocumentService : IDocumentService
         return await _context.ProjectMembers.AnyAsync(pm => pm.ProjectId == projectId && pm.UserId == userId);
     }
 
+    private async Task<bool> CanViewProjectDocumentsAsync(int userId, int projectId)
+    {
+        return await IsAdministratorAsync(userId) || await CanUploadToProjectAsync(userId, projectId);
+    }
+
+    private async Task<bool> IsAdministratorAsync(int userId)
+    {
+        var user = await _context.Users.FindAsync(userId);
+        return user?.Role == UserRole.Administrator;
+    }
+
+    /// <summary>
+    /// Documents visible to the caller via ownership, project membership/management, or a direct/department
+    /// share (FR-015). Administrators see every document (FR-021). Used by SearchAsync so inaccessible
+    /// documents are filtered out of the query itself, never after the fact.
+    /// </summary>
+    private async Task<IQueryable<Document>> BuildAccessibleDocumentsQueryAsync(int userId)
+    {
+        if (await IsAdministratorAsync(userId))
+        {
+            return _context.Documents;
+        }
+
+        var department = await _context.Users
+            .Where(u => u.UserId == userId)
+            .Select(u => u.Department)
+            .FirstOrDefaultAsync();
+
+        return _context.Documents.Where(d =>
+            d.UploadedByUserId == userId ||
+            (d.ProjectId != null && (
+                _context.Projects.Any(p => p.ProjectId == d.ProjectId && p.ProjectManagerId == userId) ||
+                _context.ProjectMembers.Any(pm => pm.ProjectId == d.ProjectId && pm.UserId == userId))) ||
+            _context.DocumentShares.Any(s => s.DocumentId == d.DocumentId && (
+                s.SharedWithUserId == userId ||
+                (department != null && s.SharedWithDepartment == department))));
+    }
+
+    private async Task<PagedResult<DocumentSummary>> ExecutePagedQueryAsync(IQueryable<Document> query, DocumentQuery documentQuery)
+    {
+        query = ApplyFilters(query, documentQuery);
+        var totalCount = await query.CountAsync();
+        var sorted = ApplySort(query, documentQuery);
+
+        var items = await ProjectToSummary(sorted)
+            .Skip((documentQuery.Page - 1) * documentQuery.PageSize)
+            .Take(documentQuery.PageSize)
+            .ToListAsync();
+
+        return new PagedResult<DocumentSummary>
+        {
+            Items = items,
+            TotalCount = totalCount,
+            Page = documentQuery.Page,
+            PageSize = documentQuery.PageSize
+        };
+    }
+
+    private static IQueryable<Document> ApplyFilters(IQueryable<Document> query, DocumentQuery documentQuery)
+    {
+        if (!string.IsNullOrWhiteSpace(documentQuery.CategoryFilter))
+        {
+            query = query.Where(d => d.Category == documentQuery.CategoryFilter);
+        }
+
+        if (documentQuery.ProjectIdFilter.HasValue)
+        {
+            query = query.Where(d => d.ProjectId == documentQuery.ProjectIdFilter);
+        }
+
+        if (documentQuery.UploadedFrom.HasValue)
+        {
+            query = query.Where(d => d.UploadDate >= documentQuery.UploadedFrom.Value);
+        }
+
+        if (documentQuery.UploadedTo.HasValue)
+        {
+            query = query.Where(d => d.UploadDate <= documentQuery.UploadedTo.Value);
+        }
+
+        return query;
+    }
+
+    private static IQueryable<Document> ApplySort(IQueryable<Document> query, DocumentQuery documentQuery)
+    {
+        return documentQuery.SortBy switch
+        {
+            DocumentSortField.Title => documentQuery.SortDescending ? query.OrderByDescending(d => d.Title) : query.OrderBy(d => d.Title),
+            DocumentSortField.Category => documentQuery.SortDescending ? query.OrderByDescending(d => d.Category) : query.OrderBy(d => d.Category),
+            DocumentSortField.FileSizeBytes => documentQuery.SortDescending ? query.OrderByDescending(d => d.FileSizeBytes) : query.OrderBy(d => d.FileSizeBytes),
+            _ => documentQuery.SortDescending ? query.OrderByDescending(d => d.UploadDate) : query.OrderBy(d => d.UploadDate)
+        };
+    }
+
+    private static IQueryable<DocumentSummary> ProjectToSummary(IQueryable<Document> query) => query.Select(d => new DocumentSummary
+    {
+        DocumentId = d.DocumentId,
+        Title = d.Title,
+        Category = d.Category,
+        UploadDate = d.UploadDate,
+        FileSizeBytes = d.FileSizeBytes,
+        FileType = d.FileType,
+        ProjectId = d.ProjectId,
+        ProjectName = d.Project != null ? d.Project.Name : null,
+        UploadedByUserId = d.UploadedByUserId,
+        UploaderName = d.Uploader.DisplayName
+    });
+
     private HashSet<string> GetAllowedExtensions()
     {
         var configured = _configuration.GetSection("DocumentStorage:AllowedExtensions").Get<string[]>();
@@ -162,17 +270,44 @@ public class DocumentService : IDocumentService
         return configured is > 0 ? configured.Value : FallbackMaxFileSizeBytes;
     }
 
-    public Task<PagedResult<DocumentSummary>> GetMyDocumentsAsync(int requestingUserId, DocumentQuery query)
-        => throw new NotImplementedException();
+    public async Task<PagedResult<DocumentSummary>> GetMyDocumentsAsync(int requestingUserId, DocumentQuery query)
+    {
+        var baseQuery = _context.Documents.Where(d => d.UploadedByUserId == requestingUserId);
+        return await ExecutePagedQueryAsync(baseQuery, query);
+    }
 
-    public Task<IReadOnlyList<DocumentSummary>> GetProjectDocumentsAsync(int requestingUserId, int projectId)
-        => throw new NotImplementedException();
+    public async Task<IReadOnlyList<DocumentSummary>> GetProjectDocumentsAsync(int requestingUserId, int projectId)
+    {
+        if (!await CanViewProjectDocumentsAsync(requestingUserId, projectId))
+        {
+            return Array.Empty<DocumentSummary>();
+        }
+
+        return await ProjectToSummary(_context.Documents.Where(d => d.ProjectId == projectId))
+            .OrderByDescending(d => d.UploadDate)
+            .ToListAsync();
+    }
 
     public Task<IReadOnlyList<DocumentSummary>> GetTaskDocumentsAsync(int requestingUserId, int taskId)
         => throw new NotImplementedException();
 
-    public Task<PagedResult<DocumentSummary>> SearchAsync(int requestingUserId, string searchTerm, DocumentQuery query)
-        => throw new NotImplementedException();
+    public async Task<PagedResult<DocumentSummary>> SearchAsync(int requestingUserId, string searchTerm, DocumentQuery query)
+    {
+        var accessibleQuery = await BuildAccessibleDocumentsQueryAsync(requestingUserId);
+
+        if (!string.IsNullOrWhiteSpace(searchTerm))
+        {
+            var term = searchTerm.Trim();
+            accessibleQuery = accessibleQuery.Where(d =>
+                d.Title.Contains(term) ||
+                (d.Description != null && d.Description.Contains(term)) ||
+                (d.Tags != null && d.Tags.Contains(term)) ||
+                d.Uploader.DisplayName.Contains(term) ||
+                (d.Project != null && d.Project.Name.Contains(term)));
+        }
+
+        return await ExecutePagedQueryAsync(accessibleQuery, query);
+    }
 
     public Task<IReadOnlyList<DocumentSummary>> GetSharedWithMeAsync(int requestingUserId)
         => throw new NotImplementedException();

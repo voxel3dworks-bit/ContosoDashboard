@@ -113,11 +113,12 @@
     private string? _tags;
     private Guid _inputFileKey = Guid.NewGuid();
 
-    public void Show()
+    public void Show(int? presetProjectId = null)
     {
         _isVisible = true;
         _errorMessage = null;
         _successMessage = null;
+        _selectedProjectId = presetProjectId;
         StateHasChanged();
     }
 
