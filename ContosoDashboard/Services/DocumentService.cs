@@ -160,6 +160,44 @@ public class DocumentService : IDocumentService
         return user?.Role == UserRole.Administrator;
     }
 
+    private async Task<bool> IsProjectManagerOfAsync(int userId, int projectId)
+    {
+        var project = await _context.Projects.FindAsync(projectId);
+        return project != null && project.ProjectManagerId == userId;
+    }
+
+    /// <summary>
+    /// FR-024's "team" has no dedicated entity in this schema — it's grounded in the existing
+    /// ProjectMember.Role == "TeamLead" relationship: requestingUserId leads a project's team if they
+    /// hold that role on it, and uploaderUserId is a "member of their team" if they're on the same project.
+    /// </summary>
+    private async Task<bool> IsTeamLeadOfUploaderAsync(int requestingUserId, int uploaderUserId)
+    {
+        if (requestingUserId == uploaderUserId)
+        {
+            return false;
+        }
+
+        var requestingUser = await _context.Users.FindAsync(requestingUserId);
+        if (requestingUser?.Role != UserRole.TeamLead)
+        {
+            return false;
+        }
+
+        var ledProjectIds = await _context.ProjectMembers
+            .Where(pm => pm.UserId == requestingUserId && pm.Role == "TeamLead")
+            .Select(pm => pm.ProjectId)
+            .ToListAsync();
+
+        if (ledProjectIds.Count == 0)
+        {
+            return false;
+        }
+
+        return await _context.ProjectMembers
+            .AnyAsync(pm => pm.UserId == uploaderUserId && ledProjectIds.Contains(pm.ProjectId));
+    }
+
     /// <summary>
     /// Documents visible to the caller via ownership, project membership/management, or a direct/department
     /// share (FR-015). Administrators see every document (FR-021). Used by SearchAsync so inaccessible
@@ -404,17 +442,181 @@ public class DocumentService : IDocumentService
         UpdatedDate = d.UpdatedDate
     };
 
-    public Task<DocumentDetail?> GetByIdAsync(int requestingUserId, int documentId)
-        => throw new NotImplementedException();
+    public async Task<DocumentDetail?> GetByIdAsync(int requestingUserId, int documentId)
+    {
+        var document = await _context.Documents
+            .Include(d => d.Uploader)
+            .Include(d => d.Project)
+            .FirstOrDefaultAsync(d => d.DocumentId == documentId);
 
-    public Task<bool> UpdateMetadataAsync(int requestingUserId, int documentId, DocumentMetadataUpdate update)
-        => throw new NotImplementedException();
+        if (document == null)
+        {
+            return null;
+        }
 
-    public Task<UploadResult> ReplaceFileAsync(int requestingUserId, int documentId, Stream fileStream, string fileName, string contentType)
-        => throw new NotImplementedException();
+        var canManage = document.UploadedByUserId == requestingUserId
+            || await IsTeamLeadOfUploaderAsync(requestingUserId, document.UploadedByUserId);
 
-    public Task<bool> DeleteAsync(int requestingUserId, int documentId)
-        => throw new NotImplementedException();
+        return canManage ? ToDetail(document) : null;
+    }
+
+    public async Task<bool> UpdateMetadataAsync(int requestingUserId, int documentId, DocumentMetadataUpdate update)
+    {
+        if (string.IsNullOrWhiteSpace(update.Title) || !DocumentCategories.All.Contains(update.Category))
+        {
+            return false;
+        }
+
+        var document = await _context.Documents.FindAsync(documentId);
+        if (document == null)
+        {
+            return false;
+        }
+
+        var canManage = document.UploadedByUserId == requestingUserId
+            || await IsTeamLeadOfUploaderAsync(requestingUserId, document.UploadedByUserId);
+
+        if (!canManage)
+        {
+            return false;
+        }
+
+        document.Title = update.Title;
+        document.Description = update.Description;
+        document.Category = update.Category;
+        document.Tags = update.Tags;
+        document.UpdatedDate = DateTime.UtcNow;
+
+        _context.DocumentActivityLogs.Add(new DocumentActivityLog
+        {
+            DocumentId = documentId,
+            DocumentTitleSnapshot = document.Title,
+            UserId = requestingUserId,
+            Action = DocumentActivityType.MetadataEdit,
+            Timestamp = DateTime.UtcNow
+        });
+
+        await _context.SaveChangesAsync();
+        return true;
+    }
+
+    public async Task<UploadResult> ReplaceFileAsync(int requestingUserId, int documentId, Stream fileStream, string fileName, string contentType)
+    {
+        var document = await _context.Documents.FindAsync(documentId);
+        if (document == null)
+        {
+            return UploadResult.Failed("Document not found.");
+        }
+
+        // Only the owner can replace the file — distinct from metadata edit rights, which FR-024 also
+        // grants to Team Leads; file replacement was not extended to Team Leads.
+        if (document.UploadedByUserId != requestingUserId)
+        {
+            return UploadResult.Failed("Only the document owner can replace its file.");
+        }
+
+        var extension = Path.GetExtension(fileName).ToLowerInvariant();
+        if (string.IsNullOrEmpty(extension) || !GetAllowedExtensions().Contains(extension))
+        {
+            return UploadResult.Failed($"File type '{extension}' is not supported.");
+        }
+
+        var maxFileSizeBytes = GetMaxFileSizeBytes();
+        if (fileStream.Length <= 0 || fileStream.Length > maxFileSizeBytes)
+        {
+            return UploadResult.Failed($"File exceeds the maximum allowed size of {maxFileSizeBytes / (1024 * 1024)} MB.");
+        }
+
+        var scanResult = await _malwareScanner.ScanAsync(fileStream, fileName, contentType);
+        if (!scanResult.IsClean)
+        {
+            return UploadResult.Failed($"File failed security scan: {scanResult.ThreatDescription}");
+        }
+
+        string newFilePath;
+        try
+        {
+            newFilePath = await _fileStorageService.UploadAsync(fileStream, fileName, contentType, requestingUserId, document.ProjectId);
+        }
+        catch (Exception ex)
+        {
+            return UploadResult.Failed($"Failed to save file: {ex.Message}");
+        }
+
+        var oldFilePath = document.FilePath;
+
+        try
+        {
+            document.FileName = fileName;
+            document.FilePath = newFilePath;
+            document.FileType = contentType;
+            document.FileSizeBytes = fileStream.Length;
+            document.UpdatedDate = DateTime.UtcNow;
+
+            _context.DocumentActivityLogs.Add(new DocumentActivityLog
+            {
+                DocumentId = documentId,
+                DocumentTitleSnapshot = document.Title,
+                UserId = requestingUserId,
+                Action = DocumentActivityType.FileReplace,
+                Timestamp = DateTime.UtcNow
+            });
+
+            await _context.SaveChangesAsync();
+        }
+        catch (Exception)
+        {
+            // Roll back the newly-written file; the old file and DB row are untouched.
+            await _fileStorageService.DeleteAsync(newFilePath);
+            return UploadResult.Failed("Failed to update document metadata.");
+        }
+
+        // Old file is deleted only now that the new file and DB row are both confirmed saved
+        // (no version history retained, FR-019).
+        await _fileStorageService.DeleteAsync(oldFilePath);
+
+        return UploadResult.Ok(document.DocumentId);
+    }
+
+    public async Task<bool> DeleteAsync(int requestingUserId, int documentId)
+    {
+        var document = await _context.Documents.FindAsync(documentId);
+        if (document == null)
+        {
+            return false;
+        }
+
+        // Owner, the project's Project Manager, or an Administrator — explicitly NOT Team Leads (FR-024).
+        var canDelete = document.UploadedByUserId == requestingUserId
+            || await IsAdministratorAsync(requestingUserId)
+            || (document.ProjectId.HasValue && await IsProjectManagerOfAsync(requestingUserId, document.ProjectId.Value));
+
+        if (!canDelete)
+        {
+            return false;
+        }
+
+        var filePath = document.FilePath;
+        var title = document.Title;
+
+        // DocumentShare rows cascade-delete and DocumentActivityLog.DocumentId is set-null at the database
+        // level (configured in ApplicationDbContext.OnModelCreating) — no manual cleanup needed here.
+        _context.Documents.Remove(document);
+
+        _context.DocumentActivityLogs.Add(new DocumentActivityLog
+        {
+            DocumentId = null,
+            DocumentTitleSnapshot = title,
+            UserId = requestingUserId,
+            Action = DocumentActivityType.Delete,
+            Timestamp = DateTime.UtcNow
+        });
+
+        await _context.SaveChangesAsync();
+        await _fileStorageService.DeleteAsync(filePath);
+
+        return true;
+    }
 
     public Task<bool> ShareAsync(int requestingUserId, int documentId, ShareTarget target)
         => throw new NotImplementedException();

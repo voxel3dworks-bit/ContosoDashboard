@@ -134,6 +134,15 @@
                                         <span class="bi bi-eye" aria-hidden="true"></span> Preview
                                     </button>
                                 }
+                                @if (document.UploadedByUserId == _currentUserId)
+                                {
+                                    <button class="btn btn-sm btn-outline-secondary ms-1" @onclick="() => OpenEditModal(document)">
+                                        <span class="bi bi-pencil" aria-hidden="true"></span> Edit
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-danger ms-1" @onclick="() => ConfirmDelete(document)">
+                                        <span class="bi bi-trash" aria-hidden="true"></span> Delete
+                                    </button>
+                                }
                             </td>
                         </tr>
                     }
@@ -173,10 +182,39 @@
     </div>
 }
 
+@if (_deleteCandidate != null)
+{
+    <div class="modal d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Delete Document</h5>
+                    <button type="button" class="btn-close" @onclick="CancelDelete" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    @if (!string.IsNullOrEmpty(_deleteErrorMessage))
+                    {
+                        <div class="alert alert-danger" role="alert">@_deleteErrorMessage</div>
+                    }
+                    <p>Are you sure you want to permanently delete <strong>@_deleteCandidate.Title</strong>?</p>
+                    <p class="text-muted small">This cannot be undone.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" @onclick="CancelDelete" disabled="@_isDeleting">Cancel</button>
+                    <button type="button" class="btn btn-danger" @onclick="ConfirmDeleteAsync" disabled="@_isDeleting">
+                        @(_isDeleting ? "Deleting..." : "Delete")
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
 <DocumentUploadModal @ref="_uploadModal"
                       CurrentUserId="_currentUserId"
                       AvailableProjects="_availableProjects"
-                      OnUploaded="HandleDocumentUploaded" />
+                      OnUploaded="HandleDocumentUploaded"
+                      OnEdited="HandleDocumentEdited" />
 
 @code {
     private int _currentUserId;
@@ -188,6 +226,9 @@
     private DocumentQuery _query = new();
     private DocumentUploadModal? _uploadModal;
     private DocumentSummary? _previewDocument;
+    private DocumentSummary? _deleteCandidate;
+    private bool _isDeleting;
+    private string? _deleteErrorMessage;
 
     private static readonly HashSet<string> PreviewableContentTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -288,6 +329,58 @@
     private async Task HandleDocumentUploaded(UploadedDocumentInfo document)
     {
         await LoadDocumentsAsync();
+    }
+
+    private async Task OpenEditModal(DocumentSummary document)
+    {
+        var detail = await DocumentService.GetByIdAsync(_currentUserId, document.DocumentId);
+        if (detail != null)
+        {
+            _uploadModal?.ShowForEdit(detail);
+        }
+    }
+
+    private async Task HandleDocumentEdited()
+    {
+        await LoadDocumentsAsync();
+    }
+
+    private void ConfirmDelete(DocumentSummary document)
+    {
+        _deleteCandidate = document;
+        _deleteErrorMessage = null;
+    }
+
+    private void CancelDelete()
+    {
+        _deleteCandidate = null;
+        _deleteErrorMessage = null;
+    }
+
+    private async Task ConfirmDeleteAsync()
+    {
+        if (_deleteCandidate == null)
+        {
+            return;
+        }
+
+        _isDeleting = true;
+        StateHasChanged();
+
+        var success = await DocumentService.DeleteAsync(_currentUserId, _deleteCandidate.DocumentId);
+
+        _isDeleting = false;
+
+        if (success)
+        {
+            _deleteCandidate = null;
+            await LoadDocumentsAsync();
+        }
+        else
+        {
+            _deleteErrorMessage = "Failed to delete the document. You may not have permission.";
+            StateHasChanged();
+        }
     }
 
     private static string FormatFileSize(long bytes)

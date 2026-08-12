@@ -10,7 +10,7 @@
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">Upload Document</h5>
+                    <h5 class="modal-title">@(_isEditMode ? "Edit Document" : "Upload Document")</h5>
                     <button type="button" class="btn-close" @onclick="Hide" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -43,16 +43,19 @@
                         </select>
                     </div>
 
-                    <div class="mb-3">
-                        <label class="form-label">Project (optional)</label>
-                        <select class="form-select" @bind="_selectedProjectId" disabled="@_isUploading">
-                            <option value="">None (personal document)</option>
-                            @foreach (var project in AvailableProjects)
-                            {
-                                <option value="@project.ProjectId">@project.Name</option>
-                            }
-                        </select>
-                    </div>
+                    @if (!_isEditMode)
+                    {
+                        <div class="mb-3">
+                            <label class="form-label">Project (optional)</label>
+                            <select class="form-select" @bind="_selectedProjectId" disabled="@_isUploading">
+                                <option value="">None (personal document)</option>
+                                @foreach (var project in AvailableProjects)
+                                {
+                                    <option value="@project.ProjectId">@project.Name</option>
+                                }
+                            </select>
+                        </div>
+                    }
 
                     <div class="mb-3">
                         <label class="form-label">Tags (optional, comma-separated)</label>
@@ -60,11 +63,21 @@
                     </div>
 
                     <div class="mb-3">
-                        <label class="form-label">File <span class="text-danger">*</span></label>
+                        <label class="form-label">
+                            @(_isEditMode ? "Replace file (optional)" : "File")
+                            @if (!_isEditMode)
+                            {
+                                <span class="text-danger">*</span>
+                            }
+                        </label>
                         <InputFile @key="_inputFileKey" OnChange="OnFileSelected" class="form-control" disabled="@_isUploading" />
                         @if (_selectedFile != null)
                         {
                             <div class="form-text">@_selectedFile.Name (@FormatFileSize(_selectedFile.Size))</div>
+                        }
+                        @if (_isEditMode)
+                        {
+                            <div class="form-text text-muted">Leave empty to keep the current file. Replacing discards the previous version.</div>
                         }
                     </div>
 
@@ -72,7 +85,7 @@
                     {
                         <div class="progress mb-3">
                             <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" role="progressbar" style="width: 100%">
-                                Uploading...
+                                @(_isEditMode ? "Saving..." : "Uploading...")
                             </div>
                         </div>
                     }
@@ -80,7 +93,14 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" @onclick="Hide" disabled="@_isUploading">Cancel</button>
                     <button type="button" class="btn btn-primary" @onclick="HandleSubmit" disabled="@_isUploading">
-                        @(_isUploading ? "Uploading..." : "Upload")
+                        @if (_isUploading)
+                        {
+                            <text>@(_isEditMode ? "Saving..." : "Uploading...")</text>
+                        }
+                        else
+                        {
+                            <text>@(_isEditMode ? "Save Changes" : "Upload")</text>
+                        }
                     </button>
                 </div>
             </div>
@@ -98,12 +118,18 @@
     [Parameter]
     public EventCallback<UploadedDocumentInfo> OnUploaded { get; set; }
 
+    [Parameter]
+    public EventCallback OnEdited { get; set; }
+
     private const long MaxAllowedFileSizeFallback = 26_214_400; // 25 MB
 
     private bool _isVisible;
     private bool _isUploading;
     private string? _errorMessage;
     private string? _successMessage;
+
+    private bool _isEditMode;
+    private int? _editingDocumentId;
 
     private IBrowserFile? _selectedFile;
     private string _title = string.Empty;
@@ -116,15 +142,36 @@
     public void Show(int? presetProjectId = null)
     {
         _isVisible = true;
+        _isEditMode = false;
+        _editingDocumentId = null;
         _errorMessage = null;
         _successMessage = null;
         _selectedProjectId = presetProjectId;
         StateHasChanged();
     }
 
+    public void ShowForEdit(DocumentDetail document)
+    {
+        _isVisible = true;
+        _isEditMode = true;
+        _editingDocumentId = document.DocumentId;
+        _errorMessage = null;
+        _successMessage = null;
+        _title = document.Title;
+        _description = document.Description;
+        _category = document.Category;
+        _tags = document.Tags;
+        _selectedProjectId = document.ProjectId;
+        _selectedFile = null;
+        _inputFileKey = Guid.NewGuid();
+        StateHasChanged();
+    }
+
     public void Hide()
     {
         _isVisible = false;
+        _isEditMode = false;
+        _editingDocumentId = null;
         StateHasChanged();
     }
 
@@ -146,6 +193,18 @@
             return;
         }
 
+        if (_isEditMode)
+        {
+            await HandleEditSubmitAsync();
+        }
+        else
+        {
+            await HandleUploadSubmitAsync();
+        }
+    }
+
+    private async Task HandleUploadSubmitAsync()
+    {
         if (_selectedFile == null)
         {
             _errorMessage = "Please select a file to upload.";
@@ -203,6 +262,76 @@
         catch (Exception ex)
         {
             _errorMessage = $"Upload failed: {ex.Message}";
+        }
+        finally
+        {
+            _isUploading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task HandleEditSubmitAsync()
+    {
+        if (!DocumentCategories.All.Contains(_category))
+        {
+            _errorMessage = "Category is not valid.";
+            return;
+        }
+
+        _isUploading = true;
+        StateHasChanged();
+
+        try
+        {
+            var metadataUpdated = await DocumentService.UpdateMetadataAsync(CurrentUserId, _editingDocumentId!.Value, new DocumentMetadataUpdate
+            {
+                Title = _title,
+                Description = _description,
+                Category = _category,
+                Tags = _tags
+            });
+
+            if (!metadataUpdated)
+            {
+                _errorMessage = "Failed to update document metadata. You may not have permission to edit this document.";
+                return;
+            }
+
+            if (_selectedFile != null)
+            {
+                var fileName = _selectedFile.Name;
+                var contentType = _selectedFile.ContentType;
+                var maxAllowedSize = Configuration.GetValue<long?>("DocumentStorage:MaxFileSizeBytes") ?? MaxAllowedFileSizeFallback;
+
+                using var memoryStream = new MemoryStream();
+                using (var fileStream = _selectedFile.OpenReadStream(maxAllowedSize))
+                {
+                    await fileStream.CopyToAsync(memoryStream);
+                }
+                memoryStream.Position = 0;
+
+                _selectedFile = null; // Clear reference to prevent reuse (constitution Development Workflow)
+
+                var replaceResult = await DocumentService.ReplaceFileAsync(
+                    CurrentUserId,
+                    _editingDocumentId.Value,
+                    memoryStream,
+                    fileName,
+                    string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType);
+
+                if (!replaceResult.Success)
+                {
+                    _errorMessage = replaceResult.ErrorMessage ?? "Metadata was updated, but replacing the file failed.";
+                    return;
+                }
+            }
+
+            _successMessage = "Document updated successfully.";
+            await OnEdited.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Update failed: {ex.Message}";
         }
         finally
         {

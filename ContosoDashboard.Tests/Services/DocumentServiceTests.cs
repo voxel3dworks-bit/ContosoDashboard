@@ -485,4 +485,193 @@ public class DocumentServiceTests : IDisposable
 
         Assert.False(access.IsAuthorized);
     }
+
+    [Fact]
+    public async Task UpdateMetadataAsync_Allowed_ForOwner()
+    {
+        var document = SeedDocument("Original Title", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        var success = await _sut.UpdateMetadataAsync(DocumentTestFixture.EmployeeUserId, document.DocumentId,
+            new DocumentMetadataUpdate { Title = "Updated Title", Category = DocumentCategories.Reports });
+
+        Assert.True(success);
+        var updated = await _fixture.Context.Documents.FindAsync(document.DocumentId);
+        Assert.Equal("Updated Title", updated!.Title);
+        Assert.Equal(DocumentCategories.Reports, updated.Category);
+    }
+
+    [Fact]
+    public async Task UpdateMetadataAsync_Allowed_ForTeamLeadOfUploader()
+    {
+        // TeamLeadUserId (3) is seeded as ProjectMember Role="TeamLead" on ProjectId 1;
+        // EmployeeUserId (4) is seeded as a member of the same project — i.e., on the Team Lead's team.
+        var document = SeedDocument("Employee's Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        var success = await _sut.UpdateMetadataAsync(DocumentTestFixture.TeamLeadUserId, document.DocumentId,
+            new DocumentMetadataUpdate { Title = "Edited by Team Lead", Category = DocumentCategories.Reports });
+
+        Assert.True(success);
+    }
+
+    [Fact]
+    public async Task UpdateMetadataAsync_Denied_ForUnrelatedUser()
+    {
+        var document = SeedDocument("Private Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        var success = await _sut.UpdateMetadataAsync(DocumentTestFixture.OutsiderUserId, document.DocumentId,
+            new DocumentMetadataUpdate { Title = "Hijacked Title", Category = DocumentCategories.Reports });
+
+        Assert.False(success);
+        var unchanged = await _fixture.Context.Documents.FindAsync(document.DocumentId);
+        Assert.Equal("Private Doc", unchanged!.Title);
+    }
+
+    [Fact]
+    public async Task UpdateMetadataAsync_WritesMetadataEditActivityLogEntry()
+    {
+        var document = SeedDocument("Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        await _sut.UpdateMetadataAsync(DocumentTestFixture.EmployeeUserId, document.DocumentId,
+            new DocumentMetadataUpdate { Title = "Doc v2", Category = DocumentCategories.Reports });
+
+        var logEntry = await _fixture.Context.DocumentActivityLogs
+            .FirstOrDefaultAsync(l => l.DocumentId == document.DocumentId && l.Action == DocumentActivityType.MetadataEdit);
+        Assert.NotNull(logEntry);
+    }
+
+    [Fact]
+    public async Task GetByIdAsync_Allowed_ForTeamLeadOfUploader()
+    {
+        var document = SeedDocument("Employee's Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        var detail = await _sut.GetByIdAsync(DocumentTestFixture.TeamLeadUserId, document.DocumentId);
+
+        Assert.NotNull(detail);
+    }
+
+    [Fact]
+    public async Task GetByIdAsync_Denied_ForUnrelatedUser()
+    {
+        var document = SeedDocument("Private Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        var detail = await _sut.GetByIdAsync(DocumentTestFixture.OutsiderUserId, document.DocumentId);
+
+        Assert.Null(detail);
+    }
+
+    [Fact]
+    public async Task ReplaceFileAsync_Allowed_ForOwner()
+    {
+        var document = SeedDocument("Doc", DocumentCategories.Reports, DocumentTestFixture.EmployeeUserId);
+        using var newContent = new MemoryStream(new byte[] { 1, 2, 3, 4 });
+
+        var result = await _sut.ReplaceFileAsync(DocumentTestFixture.EmployeeUserId, document.DocumentId, newContent, "replacement.pdf", "application/pdf");
+
+        Assert.True(result.Success);
+        var updated = await _fixture.Context.Documents.FindAsync(document.DocumentId);
+        Assert.Equal("replacement.pdf", updated!.FileName);
+    }
+
+    [Fact]
+    public async Task ReplaceFileAsync_Denied_ForTeamLead()
+    {
+        // Team Leads get metadata view/edit rights (FR-024) but not file-replace rights.
+        var document = SeedDocument("Employee's Doc", DocumentCategories.Reports, DocumentTestFixture.EmployeeUserId);
+        using var newContent = new MemoryStream(new byte[] { 1, 2, 3, 4 });
+
+        var result = await _sut.ReplaceFileAsync(DocumentTestFixture.TeamLeadUserId, document.DocumentId, newContent, "replacement.pdf", "application/pdf");
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public async Task ReplaceFileAsync_DeletesOldFile_OnlyAfterNewFileAndDbRowSucceed()
+    {
+        var document = SeedDocument("Doc", DocumentCategories.Reports, DocumentTestFixture.EmployeeUserId);
+        document.FilePath = "pre-existing/old-path.pdf";
+        await _fixture.Context.SaveChangesAsync();
+        using var newContent = new MemoryStream(new byte[] { 9, 9, 9 });
+
+        await _sut.ReplaceFileAsync(DocumentTestFixture.EmployeeUserId, document.DocumentId, newContent, "new.pdf", "application/pdf");
+
+        Assert.Contains("pre-existing/old-path.pdf", _fileStorage.DeletedPaths);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_Allowed_ForOwner()
+    {
+        var document = SeedDocument("Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        var success = await _sut.DeleteAsync(DocumentTestFixture.EmployeeUserId, document.DocumentId);
+
+        Assert.True(success);
+        Assert.Null(await _fixture.Context.Documents.FindAsync(document.DocumentId));
+    }
+
+    [Fact]
+    public async Task DeleteAsync_Denied_ForTeamLead()
+    {
+        // FR-024 explicitly excludes Team Leads from delete rights, even over their own team's documents.
+        var document = SeedDocument("Employee's Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        var success = await _sut.DeleteAsync(DocumentTestFixture.TeamLeadUserId, document.DocumentId);
+
+        Assert.False(success);
+        Assert.NotNull(await _fixture.Context.Documents.FindAsync(document.DocumentId));
+    }
+
+    [Fact]
+    public async Task DeleteAsync_Allowed_ForProjectManagerOfDocumentsProject()
+    {
+        var document = SeedDocument("Project Doc", DocumentCategories.ProjectDocuments, DocumentTestFixture.EmployeeUserId, projectId: DocumentTestFixture.ProjectId);
+
+        var success = await _sut.DeleteAsync(DocumentTestFixture.ProjectManagerUserId, document.DocumentId);
+
+        Assert.True(success);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_Allowed_ForAdministrator()
+    {
+        var document = SeedDocument("Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        var success = await _sut.DeleteAsync(DocumentTestFixture.AdminUserId, document.DocumentId);
+
+        Assert.True(success);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_Denied_ForUnrelatedUser()
+    {
+        var document = SeedDocument("Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        var success = await _sut.DeleteAsync(DocumentTestFixture.OutsiderUserId, document.DocumentId);
+
+        Assert.False(success);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_PreservesActivityLogWithTitleSnapshot_AfterDocumentRemoved()
+    {
+        var document = SeedDocument("Doc To Be Deleted", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+        var documentId = document.DocumentId;
+
+        await _sut.DeleteAsync(DocumentTestFixture.EmployeeUserId, documentId);
+
+        var deleteLog = await _fixture.Context.DocumentActivityLogs
+            .FirstOrDefaultAsync(l => l.Action == DocumentActivityType.Delete && l.DocumentTitleSnapshot == "Doc To Be Deleted");
+        Assert.NotNull(deleteLog);
+        Assert.Null(deleteLog!.DocumentId);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_DeletesUnderlyingFile()
+    {
+        var request = ValidRequest();
+        var uploadResult = await _sut.UploadAsync(DocumentTestFixture.EmployeeUserId, request);
+
+        await _sut.DeleteAsync(DocumentTestFixture.EmployeeUserId, uploadResult.DocumentId!.Value);
+
+        Assert.Contains(_fileStorage.UploadedPaths[0], _fileStorage.DeletedPaths);
+    }
 }

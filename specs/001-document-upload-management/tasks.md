@@ -136,15 +136,15 @@ Single project (Option 1, per plan.md) — no `frontend`/`backend` split:
 
 ### Tests for User Story 4
 
-- [ ] T034 [P] [US4] Unit tests for `UpdateMetadataAsync`, `ReplaceFileAsync`, and `DeleteAsync` authorization matrix (owner, Team Lead view/edit-only, Project Manager delete-in-their-project, Administrator, unrelated user denied) in `ContosoDashboard.Tests/Services/DocumentServiceTests.cs`
+- [X] T034 [P] [US4] Unit tests for `UpdateMetadataAsync`, `ReplaceFileAsync`, and `DeleteAsync` authorization matrix (owner, Team Lead view/edit-only, Project Manager delete-in-their-project, Administrator, unrelated user denied) in `ContosoDashboard.Tests/Services/DocumentServiceTests.cs`
 
 ### Implementation for User Story 4
 
-- [ ] T035 [US4] Implement `DocumentService.GetByIdAsync` and `UpdateMetadataAsync` — callable by the document owner OR a Team Lead whose team includes the document's uploader (FR-024); `UpdateMetadataAsync` bumps `UpdatedDate` and writes a "MetadataEdit" activity log entry — in `ContosoDashboard/Services/DocumentService.cs` (depends on T034)
-- [ ] T036 [US4] Implement `DocumentService.ReplaceFileAsync` (validate new file same as upload, save new file, update the `Document` row, delete the old file only after the DB update succeeds, write a "FileReplace" activity log entry — no version history retained) in `ContosoDashboard/Services/DocumentService.cs`
-- [ ] T037 [US4] Implement `DocumentService.DeleteAsync` (owner, the project's Project Manager, or Administrator only — explicitly not Team Leads per FR-024; hard-delete the row and file; set surviving `DocumentActivityLog.DocumentId = null` with `DocumentTitleSnapshot` populated; write a "Delete" activity log entry) in `ContosoDashboard/Services/DocumentService.cs`
-- [ ] T038 [US4] Add an edit-metadata form and a delete-with-confirmation control to `ContosoDashboard/Pages/Documents.razor`
-- [ ] T039 [US4] Add a file-replace control to the edit flow in `ContosoDashboard/Shared/DocumentUploadModal.razor`
+- [X] T035 [US4] Implement `DocumentService.GetByIdAsync` and `UpdateMetadataAsync` — callable by the document owner OR a Team Lead whose team includes the document's uploader (FR-024); `UpdateMetadataAsync` bumps `UpdatedDate` and writes a "MetadataEdit" activity log entry — in `ContosoDashboard/Services/DocumentService.cs` (depends on T034)
+- [X] T036 [US4] Implement `DocumentService.ReplaceFileAsync` (validate new file same as upload, save new file, update the `Document` row, delete the old file only after the DB update succeeds, write a "FileReplace" activity log entry — no version history retained) in `ContosoDashboard/Services/DocumentService.cs`
+- [X] T037 [US4] Implement `DocumentService.DeleteAsync` (owner, the project's Project Manager, or Administrator only — explicitly not Team Leads per FR-024; hard-delete the row and file; set surviving `DocumentActivityLog.DocumentId = null` with `DocumentTitleSnapshot` populated; write a "Delete" activity log entry) in `ContosoDashboard/Services/DocumentService.cs`
+- [X] T038 [US4] Add an edit-metadata form and a delete-with-confirmation control to `ContosoDashboard/Pages/Documents.razor`
+- [X] T039 [US4] Add a file-replace control to the edit flow in `ContosoDashboard/Shared/DocumentUploadModal.razor`
 
 **Checkpoint**: User Stories 1–4 work independently — the full upload/find/retrieve/manage loop is complete.
 
