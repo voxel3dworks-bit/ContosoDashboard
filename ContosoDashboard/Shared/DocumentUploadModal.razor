@@ -1,0 +1,233 @@
+@using ContosoDashboard.Models
+@using ContosoDashboard.Services
+@using Microsoft.AspNetCore.Components.Forms
+@inject IDocumentService DocumentService
+@inject IConfiguration Configuration
+
+@if (_isVisible)
+{
+    <div class="modal d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Upload Document</h5>
+                    <button type="button" class="btn-close" @onclick="Hide" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    @if (!string.IsNullOrEmpty(_errorMessage))
+                    {
+                        <div class="alert alert-danger" role="alert">@_errorMessage</div>
+                    }
+                    @if (!string.IsNullOrEmpty(_successMessage))
+                    {
+                        <div class="alert alert-success" role="alert">@_successMessage</div>
+                    }
+
+                    <div class="mb-3">
+                        <label class="form-label">Title <span class="text-danger">*</span></label>
+                        <input class="form-control" @bind="_title" disabled="@_isUploading" />
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Description</label>
+                        <textarea class="form-control" @bind="_description" disabled="@_isUploading"></textarea>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Category <span class="text-danger">*</span></label>
+                        <select class="form-select" @bind="_category" disabled="@_isUploading">
+                            @foreach (var category in DocumentCategories.All)
+                            {
+                                <option value="@category">@category</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Project (optional)</label>
+                        <select class="form-select" @bind="_selectedProjectId" disabled="@_isUploading">
+                            <option value="">None (personal document)</option>
+                            @foreach (var project in AvailableProjects)
+                            {
+                                <option value="@project.ProjectId">@project.Name</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Tags (optional, comma-separated)</label>
+                        <input class="form-control" @bind="_tags" disabled="@_isUploading" />
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">File <span class="text-danger">*</span></label>
+                        <InputFile @key="_inputFileKey" OnChange="OnFileSelected" class="form-control" disabled="@_isUploading" />
+                        @if (_selectedFile != null)
+                        {
+                            <div class="form-text">@_selectedFile.Name (@FormatFileSize(_selectedFile.Size))</div>
+                        }
+                    </div>
+
+                    @if (_isUploading)
+                    {
+                        <div class="progress mb-3">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" role="progressbar" style="width: 100%">
+                                Uploading...
+                            </div>
+                        </div>
+                    }
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" @onclick="Hide" disabled="@_isUploading">Cancel</button>
+                    <button type="button" class="btn btn-primary" @onclick="HandleSubmit" disabled="@_isUploading">
+                        @(_isUploading ? "Uploading..." : "Upload")
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter]
+    public int CurrentUserId { get; set; }
+
+    [Parameter]
+    public List<Project> AvailableProjects { get; set; } = new();
+
+    [Parameter]
+    public EventCallback<UploadedDocumentInfo> OnUploaded { get; set; }
+
+    private const long MaxAllowedFileSizeFallback = 26_214_400; // 25 MB
+
+    private bool _isVisible;
+    private bool _isUploading;
+    private string? _errorMessage;
+    private string? _successMessage;
+
+    private IBrowserFile? _selectedFile;
+    private string _title = string.Empty;
+    private string? _description;
+    private string _category = DocumentCategories.All[0];
+    private int? _selectedProjectId;
+    private string? _tags;
+    private Guid _inputFileKey = Guid.NewGuid();
+
+    public void Show()
+    {
+        _isVisible = true;
+        _errorMessage = null;
+        _successMessage = null;
+        StateHasChanged();
+    }
+
+    public void Hide()
+    {
+        _isVisible = false;
+        StateHasChanged();
+    }
+
+    private void OnFileSelected(InputFileChangeEventArgs e)
+    {
+        _selectedFile = e.File;
+        _errorMessage = null;
+        _successMessage = null;
+    }
+
+    private async Task HandleSubmit()
+    {
+        _errorMessage = null;
+        _successMessage = null;
+
+        if (string.IsNullOrWhiteSpace(_title))
+        {
+            _errorMessage = "Title is required.";
+            return;
+        }
+
+        if (_selectedFile == null)
+        {
+            _errorMessage = "Please select a file to upload.";
+            return;
+        }
+
+        _isUploading = true;
+        StateHasChanged();
+
+        try
+        {
+            var fileName = _selectedFile.Name;
+            var fileSize = _selectedFile.Size;
+            var contentType = _selectedFile.ContentType;
+            var maxAllowedSize = Configuration.GetValue<long?>("DocumentStorage:MaxFileSizeBytes") ?? MaxAllowedFileSizeFallback;
+
+            using var memoryStream = new MemoryStream();
+            using (var fileStream = _selectedFile.OpenReadStream(maxAllowedSize))
+            {
+                await fileStream.CopyToAsync(memoryStream);
+            }
+            memoryStream.Position = 0;
+
+            _selectedFile = null; // Clear reference to prevent reuse (constitution Development Workflow)
+
+            var request = new DocumentUploadRequest
+            {
+                FileStream = memoryStream,
+                FileName = fileName,
+                ContentType = string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType,
+                FileSizeBytes = fileSize,
+                Title = _title,
+                Description = _description,
+                Category = _category,
+                Tags = _tags,
+                ProjectId = _selectedProjectId
+            };
+
+            var result = await DocumentService.UploadAsync(CurrentUserId, request);
+
+            if (result.Success)
+            {
+                _successMessage = $"'{fileName}' uploaded successfully.";
+
+                await OnUploaded.InvokeAsync(new UploadedDocumentInfo(
+                    result.DocumentId!.Value, _title, _category, fileName, fileSize, DateTime.UtcNow, _selectedProjectId));
+
+                ResetForm();
+            }
+            else
+            {
+                _errorMessage = result.ErrorMessage ?? "Upload failed.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Upload failed: {ex.Message}";
+        }
+        finally
+        {
+            _isUploading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ResetForm()
+    {
+        _title = string.Empty;
+        _description = null;
+        _category = DocumentCategories.All[0];
+        _selectedProjectId = null;
+        _tags = null;
+        _selectedFile = null;
+        _inputFileKey = Guid.NewGuid(); // Forces InputFile to re-render (constitution Development Workflow)
+    }
+
+    private static string FormatFileSize(long bytes)
+    {
+        return bytes switch
+        {
+            < 1024 => $"{bytes} B",
+            < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",
+            _ => $"{bytes / (1024.0 * 1024.0):F1} MB"
+        };
+    }
+}

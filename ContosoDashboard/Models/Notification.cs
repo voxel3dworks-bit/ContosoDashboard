@@ -42,7 +42,9 @@ public enum NotificationType
     TaskCompleted,
     TaskComment,
     ProjectUpdate,
-    SystemAnnouncement
+    SystemAnnouncement,
+    DocumentShared,
+    DocumentAddedToProject
 }
 
 public enum NotificationPriority

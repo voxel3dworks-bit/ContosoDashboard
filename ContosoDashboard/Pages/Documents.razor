@@ -1,0 +1,98 @@
+@page "/documents"
+@using ContosoDashboard.Services
+@using ContosoDashboard.Shared
+@using Microsoft.AspNetCore.Authorization
+@using System.Security.Claims
+@attribute [Authorize]
+@inject IProjectService ProjectService
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>My Documents - ContosoDashboard</PageTitle>
+
+<div class="container-fluid">
+    <div class="row mb-4">
+        <div class="col d-flex justify-content-between align-items-center">
+            <h1>My Documents</h1>
+            <button class="btn btn-primary" @onclick="OpenUploadModal">
+                <span class="bi bi-upload" aria-hidden="true"></span> Upload Document
+            </button>
+        </div>
+    </div>
+
+    @if (_uploadedThisSession.Count == 0)
+    {
+        <div class="alert alert-info">
+            No documents uploaded yet this session. Click "Upload Document" to get started.
+        </div>
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Title</th>
+                        <th>Category</th>
+                        <th>Upload Date</th>
+                        <th>File Size</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var document in _uploadedThisSession.OrderByDescending(d => d.UploadDate))
+                    {
+                        <tr>
+                            <td>@document.Title</td>
+                            <td><span class="badge bg-secondary">@document.Category</span></td>
+                            <td>@document.UploadDate.ToLocalTime().ToString("MMM dd, yyyy h:mm tt")</td>
+                            <td>@FormatFileSize(document.FileSizeBytes)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+<DocumentUploadModal @ref="_uploadModal"
+                      CurrentUserId="_currentUserId"
+                      AvailableProjects="_availableProjects"
+                      OnUploaded="HandleDocumentUploaded" />
+
+@code {
+    private int _currentUserId;
+    private List<Models.Project> _availableProjects = new();
+    private List<UploadedDocumentInfo> _uploadedThisSession = new();
+    private DocumentUploadModal? _uploadModal;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        var userIdClaim = authState.User.FindFirst(ClaimTypes.NameIdentifier);
+        if (userIdClaim != null && int.TryParse(userIdClaim.Value, out var userId))
+        {
+            _currentUserId = userId;
+            _availableProjects = await ProjectService.GetUserProjectsAsync(_currentUserId);
+        }
+    }
+
+    private void OpenUploadModal()
+    {
+        _uploadModal?.Show();
+    }
+
+    private void HandleDocumentUploaded(UploadedDocumentInfo document)
+    {
+        _uploadedThisSession.Add(document);
+        StateHasChanged();
+    }
+
+    private static string FormatFileSize(long bytes)
+    {
+        return bytes switch
+        {
+            < 1024 => $"{bytes} B",
+            < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",
+            _ => $"{bytes / (1024.0 * 1024.0):F1} MB"
+        };
+    }
+}
