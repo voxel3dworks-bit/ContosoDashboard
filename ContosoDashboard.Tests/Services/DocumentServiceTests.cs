@@ -809,4 +809,157 @@ public class DocumentServiceTests : IDisposable
 
         Assert.Empty(result);
     }
+
+    [Fact]
+    public async Task GetTaskDocumentsAsync_ReturnsDocuments_ForProjectMember()
+    {
+        var document = SeedDocument("Task Doc", DocumentCategories.ProjectDocuments, DocumentTestFixture.ProjectManagerUserId, projectId: DocumentTestFixture.ProjectId);
+        document.TaskId = DocumentTestFixture.TaskId;
+        await _fixture.Context.SaveChangesAsync();
+
+        var result = await _sut.GetTaskDocumentsAsync(DocumentTestFixture.EmployeeUserId, DocumentTestFixture.TaskId);
+
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public async Task GetTaskDocumentsAsync_ReturnsEmpty_ForUnrelatedUser()
+    {
+        var document = SeedDocument("Task Doc", DocumentCategories.ProjectDocuments, DocumentTestFixture.ProjectManagerUserId, projectId: DocumentTestFixture.ProjectId);
+        document.TaskId = DocumentTestFixture.TaskId;
+        await _fixture.Context.SaveChangesAsync();
+
+        var result = await _sut.GetTaskDocumentsAsync(DocumentTestFixture.OutsiderUserId, DocumentTestFixture.TaskId);
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task GetTaskDocumentsAsync_ReturnsDocuments_ForAssignee_WhenTaskHasNoProject()
+    {
+        const int projectLessTaskId = 9001;
+        _fixture.Context.Tasks.Add(new TaskItem
+        {
+            TaskId = projectLessTaskId,
+            Title = "Standalone Task",
+            Priority = TaskPriority.Medium,
+            Status = ContosoDashboard.Models.TaskStatus.NotStarted,
+            AssignedUserId = DocumentTestFixture.OutsiderUserId,
+            CreatedByUserId = DocumentTestFixture.OutsiderUserId,
+            ProjectId = null
+        });
+        await _fixture.Context.SaveChangesAsync();
+
+        var document = SeedDocument("Standalone Task Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.OutsiderUserId);
+        document.TaskId = projectLessTaskId;
+        await _fixture.Context.SaveChangesAsync();
+
+        var assigneeResult = await _sut.GetTaskDocumentsAsync(DocumentTestFixture.OutsiderUserId, projectLessTaskId);
+        var unrelatedResult = await _sut.GetTaskDocumentsAsync(DocumentTestFixture.EmployeeUserId, projectLessTaskId);
+
+        Assert.Single(assigneeResult);
+        Assert.Empty(unrelatedResult);
+    }
+
+    [Fact]
+    public async Task GetRecentAsync_ReturnsMostRecentDocumentsForCaller_UpToRequestedCount()
+    {
+        SeedDocument("Oldest", DocumentCategories.Reports, DocumentTestFixture.EmployeeUserId, uploadDate: DateTime.UtcNow.AddDays(-3));
+        SeedDocument("Middle", DocumentCategories.Reports, DocumentTestFixture.EmployeeUserId, uploadDate: DateTime.UtcNow.AddDays(-2));
+        SeedDocument("Newest", DocumentCategories.Reports, DocumentTestFixture.EmployeeUserId, uploadDate: DateTime.UtcNow.AddDays(-1));
+
+        var result = await _sut.GetRecentAsync(DocumentTestFixture.EmployeeUserId, count: 2);
+
+        Assert.Equal(new[] { "Newest", "Middle" }, result.Select(d => d.Title));
+    }
+
+    [Fact]
+    public async Task GetAccessibleDocumentCountAsync_CountsOwnedProjectAndSharedDocuments()
+    {
+        SeedDocument("Owned", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+        SeedDocument("Project Doc", DocumentCategories.ProjectDocuments, DocumentTestFixture.ProjectManagerUserId, projectId: DocumentTestFixture.ProjectId);
+        var sharedDoc = SeedDocument("Shared Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.ProjectManagerUserId);
+        _fixture.Context.DocumentShares.Add(new DocumentShare
+        {
+            DocumentId = sharedDoc.DocumentId,
+            SharedByUserId = DocumentTestFixture.ProjectManagerUserId,
+            SharedWithUserId = DocumentTestFixture.EmployeeUserId
+        });
+        SeedDocument("Inaccessible", DocumentCategories.PersonalFiles, DocumentTestFixture.ProjectManagerUserId);
+        await _fixture.Context.SaveChangesAsync();
+
+        var count = await _sut.GetAccessibleDocumentCountAsync(DocumentTestFixture.EmployeeUserId);
+
+        Assert.Equal(3, count); // Owned + Project Doc (member) + Shared Doc; not "Inaccessible"
+    }
+
+    [Fact]
+    public async Task UploadAsync_AutoSetsProjectId_WhenTaskIdProvidedWithoutExplicitProjectId()
+    {
+        var request = ValidRequest();
+        request.TaskId = DocumentTestFixture.TaskId; // seeded task belongs to DocumentTestFixture.ProjectId
+
+        var result = await _sut.UploadAsync(DocumentTestFixture.EmployeeUserId, request);
+
+        Assert.True(result.Success);
+        var saved = await _fixture.Context.Documents.FindAsync(result.DocumentId);
+        Assert.Equal(DocumentTestFixture.ProjectId, saved!.ProjectId);
+        Assert.Equal(DocumentTestFixture.TaskId, saved.TaskId);
+    }
+
+    [Fact]
+    public async Task UploadAsync_SendsDocumentAddedToProjectNotification_ToOtherProjectMembers()
+    {
+        var request = ValidRequest(projectId: DocumentTestFixture.ProjectId);
+
+        // ProjectManagerUserId manages the project; EmployeeUserId uploads, so the PM should be notified.
+        await _sut.UploadAsync(DocumentTestFixture.EmployeeUserId, request);
+
+        var notifications = await _fixture.Context.Notifications
+            .Where(n => n.Type == NotificationType.DocumentAddedToProject && n.UserId == DocumentTestFixture.ProjectManagerUserId)
+            .ToListAsync();
+        Assert.Single(notifications);
+    }
+
+    [Fact]
+    public async Task AttachToTaskAsync_LinksDocumentToTask_AndInheritsTaskProject()
+    {
+        var document = SeedDocument("Standalone Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        var success = await _sut.AttachToTaskAsync(DocumentTestFixture.EmployeeUserId, document.DocumentId, DocumentTestFixture.TaskId);
+
+        Assert.True(success);
+        var updated = await _fixture.Context.Documents.FindAsync(document.DocumentId);
+        Assert.Equal(DocumentTestFixture.TaskId, updated!.TaskId);
+        Assert.Equal(DocumentTestFixture.ProjectId, updated.ProjectId);
+    }
+
+    [Fact]
+    public async Task AttachToTaskAsync_Denied_ForNonOwner()
+    {
+        var document = SeedDocument("Someone Else's Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.ProjectManagerUserId);
+
+        var success = await _sut.AttachToTaskAsync(DocumentTestFixture.EmployeeUserId, document.DocumentId, DocumentTestFixture.TaskId);
+
+        Assert.False(success);
+    }
+
+    [Fact]
+    public async Task AttachToTaskAsync_Denied_WhenDocumentBelongsToADifferentProject()
+    {
+        const int otherProjectId = 9002;
+        _fixture.Context.Projects.Add(new Project
+        {
+            ProjectId = otherProjectId,
+            Name = "Other Project",
+            ProjectManagerId = DocumentTestFixture.ProjectManagerUserId
+        });
+        await _fixture.Context.SaveChangesAsync();
+
+        var document = SeedDocument("Other Project Doc", DocumentCategories.ProjectDocuments, DocumentTestFixture.EmployeeUserId, projectId: otherProjectId);
+
+        var success = await _sut.AttachToTaskAsync(DocumentTestFixture.EmployeeUserId, document.DocumentId, DocumentTestFixture.TaskId);
+
+        Assert.False(success);
+    }
 }

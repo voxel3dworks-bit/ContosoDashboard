@@ -43,7 +43,7 @@
                         </select>
                     </div>
 
-                    @if (!_isEditMode)
+                    @if (!_isEditMode && _presetTaskId == null)
                     {
                         <div class="mb-3">
                             <label class="form-label">Project (optional)</label>
@@ -136,6 +136,7 @@
     private string? _description;
     private string _category = DocumentCategories.All[0];
     private int? _selectedProjectId;
+    private int? _presetTaskId;
     private string? _tags;
     private Guid _inputFileKey = Guid.NewGuid();
 
@@ -147,7 +148,14 @@
         _errorMessage = null;
         _successMessage = null;
         _selectedProjectId = presetProjectId;
+        _presetTaskId = null;
         StateHasChanged();
+    }
+
+    public void ShowForTask(int taskId, int? projectId)
+    {
+        Show(projectId);
+        _presetTaskId = taskId;
     }
 
     public void ShowForEdit(DocumentDetail document)
@@ -172,6 +180,7 @@
         _isVisible = false;
         _isEditMode = false;
         _editingDocumentId = null;
+        _presetTaskId = null;
         StateHasChanged();
     }
 
@@ -240,7 +249,8 @@
                 Description = _description,
                 Category = _category,
                 Tags = _tags,
-                ProjectId = _selectedProjectId
+                ProjectId = _selectedProjectId,
+                TaskId = _presetTaskId
             };
 
             var result = await DocumentService.UploadAsync(CurrentUserId, request);
@@ -346,6 +356,7 @@
         _description = null;
         _category = DocumentCategories.All[0];
         _selectedProjectId = null;
+        _presetTaskId = null;
         _tags = null;
         _selectedFile = null;
         _inputFileKey = Guid.NewGuid(); // Forces InputFile to re-render (constitution Development Workflow)

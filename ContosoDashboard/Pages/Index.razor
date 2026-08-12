@@ -5,6 +5,7 @@
 @attribute [Authorize]
 @inject IDashboardService DashboardService
 @inject INotificationService NotificationService
+@inject IDocumentService DocumentService
 @inject AuthenticationStateProvider AuthenticationStateProvider
 
 <PageTitle>Dashboard - ContosoDashboard</PageTitle>
@@ -52,6 +53,14 @@
                     </div>
                 </div>
             </div>
+            <div class="col-md-3 mb-3">
+                <div class="card summary-card">
+                    <div class="card-body">
+                        <h5 class="card-title">Documents</h5>
+                        <p class="card-text display-4 text-success">@documentCount</p>
+                    </div>
+                </div>
+            </div>
         </div>
     }
 
@@ -89,6 +98,9 @@
                 <a href="/notifications" class="list-group-item list-group-item-action">
                     <i class="bi bi-bell"></i> View Notifications
                 </a>
+                <a href="/documents" class="list-group-item list-group-item-action">
+                    <i class="bi bi-file-earmark-text"></i> View My Documents
+                </a>
                 <a href="/profile" class="list-group-item list-group-item-action">
                     <i class="bi bi-person"></i> Edit Profile
                 </a>
@@ -118,12 +130,53 @@
             }
         </div>
     </div>
+
+    <div class="row mt-4">
+        <div class="col">
+            <div class="d-flex justify-content-between align-items-center">
+                <h3>Recent Documents</h3>
+                <a href="/documents" class="btn btn-sm btn-outline-primary">View All</a>
+            </div>
+            @if (recentDocuments != null && recentDocuments.Any())
+            {
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Title</th>
+                                <th>Category</th>
+                                <th>Upload Date</th>
+                                <th>File Size</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var document in recentDocuments)
+                            {
+                                <tr>
+                                    <td>@document.Title</td>
+                                    <td><span class="badge bg-secondary">@document.Category</span></td>
+                                    <td>@document.UploadDate.ToLocalTime().ToString("MMM dd, yyyy h:mm tt")</td>
+                                    <td>@FormatFileSize(document.FileSizeBytes)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            else
+            {
+                <p class="text-muted">No documents uploaded yet.</p>
+            }
+        </div>
+    </div>
 </div>
 
 @code {
     private DashboardSummary? summary;
     private List<Announcement>? announcements;
     private List<Notification>? recentNotifications;
+    private List<DocumentSummary>? recentDocuments;
+    private int documentCount;
     private string userName = "User";
     private int currentUserId = 0;
 
@@ -146,6 +199,8 @@
             summary = await DashboardService.GetDashboardSummaryAsync(currentUserId);
             announcements = await DashboardService.GetActiveAnnouncementsAsync();
             recentNotifications = await NotificationService.GetUserNotificationsAsync(currentUserId);
+            recentDocuments = (await DocumentService.GetRecentAsync(currentUserId, count: 5)).ToList();
+            documentCount = await DocumentService.GetAccessibleDocumentCountAsync(currentUserId);
         }
     }
 
@@ -163,5 +218,15 @@
             return $"{(int)timeSpan.TotalDays} days ago";
 
         return dateTime.ToString("MMM dd, yyyy");
+    }
+
+    private static string FormatFileSize(long bytes)
+    {
+        return bytes switch
+        {
+            < 1024 => $"{bytes} B",
+            < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",
+            _ => $"{bytes / (1024.0 * 1024.0):F1} MB"
+        };
     }
 }

@@ -1,10 +1,12 @@
 @page "/tasks"
 @using ContosoDashboard.Services
 @using ContosoDashboard.Models
+@using ContosoDashboard.Shared
 @using Microsoft.AspNetCore.Authorization
 @using System.Security.Claims
 @attribute [Authorize]
 @inject ITaskService TaskService
+@inject IDocumentService DocumentService
 @inject AuthenticationStateProvider AuthenticationStateProvider
 
 <PageTitle>My Tasks - ContosoDashboard</PageTitle>
@@ -135,11 +137,111 @@
     }
 </div>
 
+@if (_detailTask != null)
+{
+    <div class="modal d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-lg modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">@_detailTask.Title</h5>
+                    <button type="button" class="btn-close" @onclick="CloseTaskDetail" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    @if (!string.IsNullOrEmpty(_detailTask.Description))
+                    {
+                        <p>@_detailTask.Description</p>
+                    }
+                    <div class="row mb-3">
+                        <div class="col-md-4">
+                            <label class="text-muted small">Status</label>
+                            <p><span class="badge bg-secondary">@_detailTask.Status</span></p>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="text-muted small">Priority</label>
+                            <p><span class="badge bg-@GetPriorityColor(_detailTask.Priority)">@_detailTask.Priority</span></p>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="text-muted small">Project</label>
+                            <p>@(_detailTask.Project?.Name ?? "-")</p>
+                        </div>
+                    </div>
+
+                    <hr />
+
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="mb-0">Documents</h6>
+                        <button class="btn btn-sm btn-primary" @onclick="OpenTaskUploadModal">
+                            <span class="bi bi-upload" aria-hidden="true"></span> Upload Document
+                        </button>
+                    </div>
+
+                    @if (_taskDocuments.Count == 0)
+                    {
+                        <p class="text-muted small">No documents attached to this task yet.</p>
+                    }
+                    else
+                    {
+                        <ul class="list-group mb-3">
+                            @foreach (var document in _taskDocuments)
+                            {
+                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                    <span>@document.Title <span class="badge bg-secondary ms-1">@document.Category</span></span>
+                                    <a class="btn btn-sm btn-outline-primary" href="/documents/@document.DocumentId/download" target="_blank">
+                                        <span class="bi bi-download" aria-hidden="true"></span>
+                                    </a>
+                                </li>
+                            }
+                        </ul>
+                    }
+
+                    @if (!string.IsNullOrEmpty(_attachErrorMessage))
+                    {
+                        <div class="alert alert-danger py-2" role="alert">@_attachErrorMessage</div>
+                    }
+
+                    @if (_attachableDocuments.Count > 0)
+                    {
+                        <div class="input-group">
+                            <select class="form-select" @bind="_selectedAttachDocumentId">
+                                <option value="">-- Attach an existing document --</option>
+                                @foreach (var document in _attachableDocuments)
+                                {
+                                    <option value="@document.DocumentId">@document.Title</option>
+                                }
+                            </select>
+                            <button class="btn btn-outline-secondary" @onclick="AttachExistingDocumentAsync" disabled="@_isAttaching">
+                                @(_isAttaching ? "Attaching..." : "Attach")
+                            </button>
+                        </div>
+                    }
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" @onclick="CloseTaskDetail">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<DocumentUploadModal @ref="_taskUploadModal"
+                      CurrentUserId="currentUserId"
+                      AvailableProjects="_taskUploadProjects"
+                      OnUploaded="HandleTaskDocumentUploaded" />
+
 @code {
     private List<TaskItem>? tasks;
     private string filterStatus = "";
     private string filterPriority = "";
     private int currentUserId = 0;
+
+    private TaskItem? _detailTask;
+    private List<DocumentSummary> _taskDocuments = new();
+    private List<DocumentSummary> _attachableDocuments = new();
+    private int? _selectedAttachDocumentId;
+    private bool _isAttaching;
+    private string? _attachErrorMessage;
+    private DocumentUploadModal? _taskUploadModal;
+    private List<Project> _taskUploadProjects = new();
 
     protected override async Task OnInitializedAsync()
     {
@@ -185,9 +287,85 @@
         // TODO: Implement modal dialog for creating tasks
     }
 
-    private void ViewTaskDetails(int taskId)
+    private async Task ViewTaskDetails(int taskId)
     {
-        // TODO: Navigate to task details or show modal
+        _detailTask = tasks?.FirstOrDefault(t => t.TaskId == taskId);
+        if (_detailTask == null)
+        {
+            return;
+        }
+
+        _taskUploadProjects = _detailTask.Project != null ? new List<Project> { _detailTask.Project } : new List<Project>();
+        _attachErrorMessage = null;
+        _selectedAttachDocumentId = null;
+
+        await LoadTaskDocumentsAsync();
+    }
+
+    private async Task LoadTaskDocumentsAsync()
+    {
+        if (_detailTask == null)
+        {
+            return;
+        }
+
+        var taskDocs = await DocumentService.GetTaskDocumentsAsync(currentUserId, _detailTask.TaskId);
+        _taskDocuments = taskDocs.ToList();
+
+        var attachedIds = _taskDocuments.Select(d => d.DocumentId).ToHashSet();
+        var myDocs = await DocumentService.GetMyDocumentsAsync(currentUserId, new DocumentQuery { PageSize = 200 });
+        _attachableDocuments = myDocs.Items.Where(d => !attachedIds.Contains(d.DocumentId)).ToList();
+    }
+
+    private void CloseTaskDetail()
+    {
+        _detailTask = null;
+        _taskDocuments = new();
+        _attachableDocuments = new();
+        _selectedAttachDocumentId = null;
+        _attachErrorMessage = null;
+    }
+
+    private async Task AttachExistingDocumentAsync()
+    {
+        if (_detailTask == null || _selectedAttachDocumentId == null)
+        {
+            _attachErrorMessage = "Please select a document to attach.";
+            return;
+        }
+
+        _isAttaching = true;
+        _attachErrorMessage = null;
+        StateHasChanged();
+
+        var success = await DocumentService.AttachToTaskAsync(currentUserId, _selectedAttachDocumentId.Value, _detailTask.TaskId);
+
+        _isAttaching = false;
+
+        if (success)
+        {
+            _selectedAttachDocumentId = null;
+            await LoadTaskDocumentsAsync();
+        }
+        else
+        {
+            _attachErrorMessage = "Failed to attach the document.";
+        }
+
+        StateHasChanged();
+    }
+
+    private void OpenTaskUploadModal()
+    {
+        if (_detailTask != null)
+        {
+            _taskUploadModal?.ShowForTask(_detailTask.TaskId, _detailTask.ProjectId);
+        }
+    }
+
+    private async Task HandleTaskDocumentUploaded(UploadedDocumentInfo document)
+    {
+        await LoadTaskDocumentsAsync();
     }
 
     private string GetPriorityColor(TaskPriority priority)

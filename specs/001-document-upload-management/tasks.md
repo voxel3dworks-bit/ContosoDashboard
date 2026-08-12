@@ -180,15 +180,15 @@ Single project (Option 1, per plan.md) — no `frontend`/`backend` split:
 
 ### Tests for User Story 6
 
-- [ ] T046 [P] [US6] Unit tests for `GetTaskDocumentsAsync`, `GetRecentAsync`, and `GetAccessibleDocumentCountAsync`, plus a test that uploading with a `TaskId` auto-sets `ProjectId` to the task's project in `ContosoDashboard.Tests/Services/DocumentServiceTests.cs`
+- [X] T046 [P] [US6] Unit tests for `GetTaskDocumentsAsync`, `GetRecentAsync`, and `GetAccessibleDocumentCountAsync`, plus a test that uploading with a `TaskId` auto-sets `ProjectId` to the task's project in `ContosoDashboard.Tests/Services/DocumentServiceTests.cs`
 
 ### Implementation for User Story 6
 
-- [ ] T047 [US6] Implement `DocumentService.GetTaskDocumentsAsync` and extend `UploadAsync` so a supplied `TaskId` auto-populates `ProjectId` from `TaskItem.ProjectId` (FR-026) in `ContosoDashboard/Services/DocumentService.cs` (depends on T046)
-- [ ] T048 [US6] Implement `DocumentService.GetRecentAsync` (5 most recent uploads for the caller) and `GetAccessibleDocumentCountAsync` in `ContosoDashboard/Services/DocumentService.cs`
-- [ ] T049 [US6] Implement the task detail view (replacing the `ViewTaskDetails` `// TODO` stub) with a document list, attach-existing-document control, and upload-from-task entry point in `ContosoDashboard/Pages/Tasks.razor`
-- [ ] T050 [US6] Add a "Recent Documents" widget and a document-count summary card to `ContosoDashboard/Pages/Index.razor`
-- [ ] T051 [US6] Trigger a `DocumentAddedToProject` notification to project members when a document is uploaded with a `ProjectId` set, in `ContosoDashboard/Services/DocumentService.cs`
+- [X] T047 [US6] Implement `DocumentService.GetTaskDocumentsAsync` and extend `UploadAsync` so a supplied `TaskId` auto-populates `ProjectId` from `TaskItem.ProjectId` (FR-026) in `ContosoDashboard/Services/DocumentService.cs` (depends on T046)
+- [X] T048 [US6] Implement `DocumentService.GetRecentAsync` (5 most recent uploads for the caller) and `GetAccessibleDocumentCountAsync` in `ContosoDashboard/Services/DocumentService.cs`
+- [X] T049 [US6] Implement the task detail view (replacing the `ViewTaskDetails` `// TODO` stub) with a document list, attach-existing-document control, and upload-from-task entry point in `ContosoDashboard/Pages/Tasks.razor`
+- [X] T050 [US6] Add a "Recent Documents" widget and a document-count summary card to `ContosoDashboard/Pages/Index.razor`
+- [X] T051 [US6] Trigger a `DocumentAddedToProject` notification to project members when a document is uploaded with a `ProjectId` set, in `ContosoDashboard/Services/DocumentService.cs`
 
 **Checkpoint**: All six user stories are independently functional — the feature is feature-complete per spec.md.
 

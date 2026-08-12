@@ -56,11 +56,6 @@ public class DocumentService : IDocumentService
             return UploadResult.Failed($"File exceeds the maximum allowed size of {maxFileSizeBytes / (1024 * 1024)} MB.");
         }
 
-        if (request.ProjectId.HasValue && !await CanUploadToProjectAsync(requestingUserId, request.ProjectId.Value))
-        {
-            return UploadResult.Failed("You do not have permission to upload documents to this project.");
-        }
-
         if (request.TaskId.HasValue)
         {
             var task = await _context.Tasks.FindAsync(request.TaskId.Value);
@@ -73,6 +68,14 @@ public class DocumentService : IDocumentService
             {
                 return UploadResult.Failed("The task does not belong to the specified project.");
             }
+
+            // Documents uploaded from a task are automatically associated with the task's project (FR-026).
+            request.ProjectId ??= task.ProjectId;
+        }
+
+        if (request.ProjectId.HasValue && !await CanUploadToProjectAsync(requestingUserId, request.ProjectId.Value))
+        {
+            return UploadResult.Failed("You do not have permission to upload documents to this project.");
         }
 
         var scanResult = await _malwareScanner.ScanAsync(request.FileStream, request.FileName, request.ContentType);
@@ -130,7 +133,49 @@ public class DocumentService : IDocumentService
             return UploadResult.Failed("Failed to save document metadata.");
         }
 
+        await NotifyProjectMembersOfNewDocumentAsync(document);
+
         return UploadResult.Ok(document.DocumentId);
+    }
+
+    /// <summary>
+    /// Notifies a project's members and manager when a document is uploaded to their project (FR-029),
+    /// excluding the uploader themselves.
+    /// </summary>
+    private async Task NotifyProjectMembersOfNewDocumentAsync(Document document)
+    {
+        if (!document.ProjectId.HasValue)
+        {
+            return;
+        }
+
+        var project = await _context.Projects.FindAsync(document.ProjectId.Value);
+        if (project == null)
+        {
+            return;
+        }
+
+        var memberIds = await _context.ProjectMembers
+            .Where(pm => pm.ProjectId == document.ProjectId.Value)
+            .Select(pm => pm.UserId)
+            .ToListAsync();
+
+        var recipientIds = memberIds
+            .Append(project.ProjectManagerId)
+            .Distinct()
+            .Where(id => id != document.UploadedByUserId);
+
+        foreach (var recipientId in recipientIds)
+        {
+            await _notificationService.CreateNotificationAsync(new Notification
+            {
+                UserId = recipientId,
+                Title = "New project document",
+                Message = $"A new document \"{document.Title}\" was added to {project.Name}.",
+                Type = NotificationType.DocumentAddedToProject,
+                Priority = NotificationPriority.Informational
+            });
+        }
     }
 
     private async Task<bool> CanUploadToProjectAsync(int userId, int projectId)
@@ -326,8 +371,57 @@ public class DocumentService : IDocumentService
             .ToListAsync();
     }
 
-    public Task<IReadOnlyList<DocumentSummary>> GetTaskDocumentsAsync(int requestingUserId, int taskId)
-        => throw new NotImplementedException();
+    public async Task<IReadOnlyList<DocumentSummary>> GetTaskDocumentsAsync(int requestingUserId, int taskId)
+    {
+        var task = await _context.Tasks.FindAsync(taskId);
+        if (task == null)
+        {
+            return Array.Empty<DocumentSummary>();
+        }
+
+        // A task with a project follows project-level visibility; a task with no project is only
+        // visible to its assignee/creator or an Administrator.
+        var isAuthorized = task.ProjectId.HasValue
+            ? await CanViewProjectDocumentsAsync(requestingUserId, task.ProjectId.Value)
+            : task.AssignedUserId == requestingUserId || task.CreatedByUserId == requestingUserId || await IsAdministratorAsync(requestingUserId);
+
+        if (!isAuthorized)
+        {
+            return Array.Empty<DocumentSummary>();
+        }
+
+        return await ProjectToSummary(_context.Documents.Where(d => d.TaskId == taskId))
+            .OrderByDescending(d => d.UploadDate)
+            .ToListAsync();
+    }
+
+    public async Task<bool> AttachToTaskAsync(int requestingUserId, int documentId, int taskId)
+    {
+        var document = await _context.Documents.FindAsync(documentId);
+        if (document == null || document.UploadedByUserId != requestingUserId)
+        {
+            return false;
+        }
+
+        var task = await _context.Tasks.FindAsync(taskId);
+        if (task == null)
+        {
+            return false;
+        }
+
+        // Don't silently reassign a document that already belongs to a different project than the task.
+        if (document.ProjectId.HasValue && task.ProjectId.HasValue && document.ProjectId != task.ProjectId)
+        {
+            return false;
+        }
+
+        document.TaskId = taskId;
+        document.ProjectId ??= task.ProjectId;
+        document.UpdatedDate = DateTime.UtcNow;
+
+        await _context.SaveChangesAsync();
+        return true;
+    }
 
     public async Task<PagedResult<DocumentSummary>> SearchAsync(int requestingUserId, string searchTerm, DocumentQuery query)
     {
@@ -365,11 +459,19 @@ public class DocumentService : IDocumentService
             .ToListAsync();
     }
 
-    public Task<IReadOnlyList<DocumentSummary>> GetRecentAsync(int requestingUserId, int count)
-        => throw new NotImplementedException();
+    public async Task<IReadOnlyList<DocumentSummary>> GetRecentAsync(int requestingUserId, int count)
+    {
+        return await ProjectToSummary(_context.Documents.Where(d => d.UploadedByUserId == requestingUserId))
+            .OrderByDescending(d => d.UploadDate)
+            .Take(count)
+            .ToListAsync();
+    }
 
-    public Task<int> GetAccessibleDocumentCountAsync(int requestingUserId)
-        => throw new NotImplementedException();
+    public async Task<int> GetAccessibleDocumentCountAsync(int requestingUserId)
+    {
+        var query = await BuildAccessibleDocumentsQueryAsync(requestingUserId);
+        return await query.CountAsync();
+    }
 
     public async Task<DocumentAccessCheck> AuthorizeAccessAsync(int requestingUserId, int documentId)
     {

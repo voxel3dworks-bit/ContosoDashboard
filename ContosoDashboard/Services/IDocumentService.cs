@@ -9,6 +9,10 @@ public interface IDocumentService
     Task<PagedResult<DocumentSummary>> GetMyDocumentsAsync(int requestingUserId, DocumentQuery query);
     Task<IReadOnlyList<DocumentSummary>> GetProjectDocumentsAsync(int requestingUserId, int projectId);
     Task<IReadOnlyList<DocumentSummary>> GetTaskDocumentsAsync(int requestingUserId, int taskId);
+
+    // Attaches an existing document (owned by the caller) to a task (FR-025); if the document has no
+    // project yet, it inherits the task's project (consistent with FR-026's auto-association).
+    Task<bool> AttachToTaskAsync(int requestingUserId, int documentId, int taskId);
     Task<PagedResult<DocumentSummary>> SearchAsync(int requestingUserId, string searchTerm, DocumentQuery query);
     Task<IReadOnlyList<DocumentSummary>> GetSharedWithMeAsync(int requestingUserId);
     Task<IReadOnlyList<DocumentSummary>> GetRecentAsync(int requestingUserId, int count);
