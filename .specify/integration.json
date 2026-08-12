@@ -1,0 +1,20 @@
+{
+  "version": "0.16.1.dev0",
+  "integration_state_schema": 1,
+  "installed_integrations": [
+    "gemini",
+    "claude"
+  ],
+  "integration_settings": {
+    "gemini": {
+      "script": "ps",
+      "invoke_separator": "."
+    },
+    "claude": {
+      "script": "ps",
+      "invoke_separator": "-"
+    }
+  },
+  "integration": "gemini",
+  "default_integration": "gemini"
+}
