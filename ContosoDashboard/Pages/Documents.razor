@@ -108,6 +108,7 @@
                         {
                             <th>Uploaded By</th>
                         }
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -123,6 +124,17 @@
                             {
                                 <td>@document.UploaderName</td>
                             }
+                            <td>
+                                <a class="btn btn-sm btn-outline-primary" href="/documents/@document.DocumentId/download" target="_blank">
+                                    <span class="bi bi-download" aria-hidden="true"></span> Download
+                                </a>
+                                @if (IsPreviewable(document.FileType))
+                                {
+                                    <button class="btn btn-sm btn-outline-secondary ms-1" @onclick="() => ShowPreview(document)">
+                                        <span class="bi bi-eye" aria-hidden="true"></span> Preview
+                                    </button>
+                                }
+                            </td>
                         </tr>
                     }
                 </tbody>
@@ -130,6 +142,36 @@
         </div>
     }
 </div>
+
+@if (_previewDocument != null)
+{
+    <div class="modal d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-lg modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">@_previewDocument.Title</h5>
+                    <button type="button" class="btn-close" @onclick="ClosePreview" aria-label="Close"></button>
+                </div>
+                <div class="modal-body text-center">
+                    @if (IsImage(_previewDocument.FileType))
+                    {
+                        <img src="/documents/@_previewDocument.DocumentId/preview" alt="@_previewDocument.Title" class="img-fluid" />
+                    }
+                    else
+                    {
+                        <iframe src="/documents/@_previewDocument.DocumentId/preview" title="@_previewDocument.Title" style="width: 100%; height: 70vh; border: none;"></iframe>
+                    }
+                </div>
+                <div class="modal-footer">
+                    <a class="btn btn-primary" href="/documents/@_previewDocument.DocumentId/download" target="_blank">
+                        <span class="bi bi-download" aria-hidden="true"></span> Download
+                    </a>
+                    <button type="button" class="btn btn-secondary" @onclick="ClosePreview">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
 
 <DocumentUploadModal @ref="_uploadModal"
                       CurrentUserId="_currentUserId"
@@ -145,6 +187,12 @@
     private string _searchTerm = string.Empty;
     private DocumentQuery _query = new();
     private DocumentUploadModal? _uploadModal;
+    private DocumentSummary? _previewDocument;
+
+    private static readonly HashSet<string> PreviewableContentTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "application/pdf", "image/jpeg", "image/png"
+    };
 
     private int? _projectFilterValue
     {
@@ -222,6 +270,20 @@
     {
         _uploadModal?.Show();
     }
+
+    private void ShowPreview(DocumentSummary document)
+    {
+        _previewDocument = document;
+    }
+
+    private void ClosePreview()
+    {
+        _previewDocument = null;
+    }
+
+    private static bool IsPreviewable(string fileType) => PreviewableContentTypes.Contains(fileType);
+
+    private static bool IsImage(string fileType) => fileType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);
 
     private async Task HandleDocumentUploaded(UploadedDocumentInfo document)
     {

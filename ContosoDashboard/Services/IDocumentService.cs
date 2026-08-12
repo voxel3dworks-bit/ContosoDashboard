@@ -17,6 +17,10 @@ public interface IDocumentService
     // Access — FR-016/FR-017 (metadata + authorization check; byte streaming itself happens in DocumentsController)
     Task<DocumentAccessCheck> AuthorizeAccessAsync(int requestingUserId, int documentId);
 
+    // Called by DocumentsController after a successful download/preview stream (FR-030 audit log).
+    // Caller must have already been authorized via AuthorizeAccessAsync for this request.
+    Task RecordDownloadAsync(int requestingUserId, int documentId);
+
     // Management — FR-018..FR-021, FR-024
     Task<DocumentDetail?> GetByIdAsync(int requestingUserId, int documentId);
     Task<bool> UpdateMetadataAsync(int requestingUserId, int documentId, DocumentMetadataUpdate update);
@@ -74,6 +78,7 @@ public class DocumentDetail : DocumentSummary
     public string? Description { get; set; }
     public string? Tags { get; set; }
     public string FileName { get; set; } = string.Empty;
+    public string FilePath { get; set; } = string.Empty;
     public int? TaskId { get; set; }
     public DateTime UpdatedDate { get; set; }
 }

@@ -318,8 +318,91 @@ public class DocumentService : IDocumentService
     public Task<int> GetAccessibleDocumentCountAsync(int requestingUserId)
         => throw new NotImplementedException();
 
-    public Task<DocumentAccessCheck> AuthorizeAccessAsync(int requestingUserId, int documentId)
-        => throw new NotImplementedException();
+    public async Task<DocumentAccessCheck> AuthorizeAccessAsync(int requestingUserId, int documentId)
+    {
+        var document = await _context.Documents
+            .Include(d => d.Uploader)
+            .Include(d => d.Project)
+            .FirstOrDefaultAsync(d => d.DocumentId == documentId);
+
+        if (document == null || !await CanAccessDocumentAsync(requestingUserId, document))
+        {
+            return DocumentAccessCheck.Denied();
+        }
+
+        return DocumentAccessCheck.Granted(ToDetail(document));
+    }
+
+    public async Task RecordDownloadAsync(int requestingUserId, int documentId)
+    {
+        var title = await _context.Documents
+            .Where(d => d.DocumentId == documentId)
+            .Select(d => d.Title)
+            .FirstOrDefaultAsync();
+
+        _context.DocumentActivityLogs.Add(new DocumentActivityLog
+        {
+            DocumentId = documentId,
+            DocumentTitleSnapshot = title,
+            UserId = requestingUserId,
+            Action = DocumentActivityType.Download,
+            Timestamp = DateTime.UtcNow
+        });
+
+        await _context.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Owner, project member/PM, share recipient (direct or department match), or Administrator (FR-016/FR-017).
+    /// Deliberately excludes "Team Lead of the uploader" — FR-024 grants Team Leads metadata view/edit rights
+    /// only, not file download/preview rights (see contracts/document-service-contract.md).
+    /// </summary>
+    private async Task<bool> CanAccessDocumentAsync(int userId, Document document)
+    {
+        if (document.UploadedByUserId == userId)
+        {
+            return true;
+        }
+
+        if (await IsAdministratorAsync(userId))
+        {
+            return true;
+        }
+
+        if (document.ProjectId.HasValue && await CanUploadToProjectAsync(userId, document.ProjectId.Value))
+        {
+            return true;
+        }
+
+        var department = await _context.Users
+            .Where(u => u.UserId == userId)
+            .Select(u => u.Department)
+            .FirstOrDefaultAsync();
+
+        return await _context.DocumentShares.AnyAsync(s => s.DocumentId == document.DocumentId && (
+            s.SharedWithUserId == userId ||
+            (department != null && s.SharedWithDepartment == department)));
+    }
+
+    private static DocumentDetail ToDetail(Document d) => new()
+    {
+        DocumentId = d.DocumentId,
+        Title = d.Title,
+        Category = d.Category,
+        UploadDate = d.UploadDate,
+        FileSizeBytes = d.FileSizeBytes,
+        FileType = d.FileType,
+        ProjectId = d.ProjectId,
+        ProjectName = d.Project?.Name,
+        UploadedByUserId = d.UploadedByUserId,
+        UploaderName = d.Uploader.DisplayName,
+        Description = d.Description,
+        Tags = d.Tags,
+        FileName = d.FileName,
+        FilePath = d.FilePath,
+        TaskId = d.TaskId,
+        UpdatedDate = d.UpdatedDate
+    };
 
     public Task<DocumentDetail?> GetByIdAsync(int requestingUserId, int documentId)
         => throw new NotImplementedException();
