@@ -347,8 +347,23 @@ public class DocumentService : IDocumentService
         return await ExecutePagedQueryAsync(accessibleQuery, query);
     }
 
-    public Task<IReadOnlyList<DocumentSummary>> GetSharedWithMeAsync(int requestingUserId)
-        => throw new NotImplementedException();
+    public async Task<IReadOnlyList<DocumentSummary>> GetSharedWithMeAsync(int requestingUserId)
+    {
+        var department = await _context.Users
+            .Where(u => u.UserId == requestingUserId)
+            .Select(u => u.Department)
+            .FirstOrDefaultAsync();
+
+        var sharedDocumentIds = await _context.DocumentShares
+            .Where(s => s.SharedWithUserId == requestingUserId || (department != null && s.SharedWithDepartment == department))
+            .Select(s => s.DocumentId)
+            .Distinct()
+            .ToListAsync();
+
+        return await ProjectToSummary(_context.Documents.Where(d => sharedDocumentIds.Contains(d.DocumentId)))
+            .OrderByDescending(d => d.UploadDate)
+            .ToListAsync();
+    }
 
     public Task<IReadOnlyList<DocumentSummary>> GetRecentAsync(int requestingUserId, int count)
         => throw new NotImplementedException();
@@ -618,8 +633,76 @@ public class DocumentService : IDocumentService
         return true;
     }
 
-    public Task<bool> ShareAsync(int requestingUserId, int documentId, ShareTarget target)
-        => throw new NotImplementedException();
+    public async Task<bool> ShareAsync(int requestingUserId, int documentId, ShareTarget target)
+    {
+        var document = await _context.Documents.FindAsync(documentId);
+        if (document == null || document.UploadedByUserId != requestingUserId)
+        {
+            return false;
+        }
+
+        var hasUserTarget = target.UserId.HasValue;
+        var hasDepartmentTarget = !string.IsNullOrWhiteSpace(target.Department);
+        if (hasUserTarget == hasDepartmentTarget)
+        {
+            // Exactly one of UserId/Department must be set (data-model.md validation rule).
+            return false;
+        }
+
+        if (hasUserTarget && !await _context.Users.AnyAsync(u => u.UserId == target.UserId!.Value))
+        {
+            return false;
+        }
+
+        var sharer = await _context.Users.FindAsync(requestingUserId);
+
+        var share = new DocumentShare
+        {
+            DocumentId = documentId,
+            SharedByUserId = requestingUserId,
+            SharedWithUserId = target.UserId,
+            SharedWithDepartment = hasDepartmentTarget ? target.Department!.Trim() : null,
+            SharedDate = DateTime.UtcNow
+        };
+        _context.DocumentShares.Add(share);
+
+        _context.DocumentActivityLogs.Add(new DocumentActivityLog
+        {
+            DocumentId = documentId,
+            DocumentTitleSnapshot = document.Title,
+            UserId = requestingUserId,
+            Action = DocumentActivityType.Share,
+            Timestamp = DateTime.UtcNow
+        });
+
+        await _context.SaveChangesAsync();
+
+        // A department share notifies every current member of that department (FR-022), excluding the
+        // sharer themselves; a direct share notifies only that one recipient.
+        var recipientUserIds = hasUserTarget
+            ? new List<int> { target.UserId!.Value }
+            : await _context.Users
+                .Where(u => u.Department == share.SharedWithDepartment && u.UserId != requestingUserId)
+                .Select(u => u.UserId)
+                .ToListAsync();
+
+        foreach (var recipientId in recipientUserIds)
+        {
+            await _notificationService.CreateNotificationAsync(new Notification
+            {
+                UserId = recipientId,
+                Title = "Document shared with you",
+                Message = $"{sharer?.DisplayName ?? "A colleague"} shared \"{document.Title}\" with you.",
+                Type = NotificationType.DocumentShared,
+                Priority = NotificationPriority.Informational
+            });
+        }
+
+        share.NotificationSent = true;
+        await _context.SaveChangesAsync();
+
+        return true;
+    }
 
     public Task<IReadOnlyList<DocumentActivitySummary>> GetActivityLogAsync(int requestingUserId, DateRange range)
         => throw new NotImplementedException();

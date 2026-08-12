@@ -674,4 +674,139 @@ public class DocumentServiceTests : IDisposable
 
         Assert.Contains(_fileStorage.UploadedPaths[0], _fileStorage.DeletedPaths);
     }
+
+    [Fact]
+    public async Task ShareAsync_CreatesShare_ForIndividualUserTarget()
+    {
+        var document = SeedDocument("Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        var success = await _sut.ShareAsync(DocumentTestFixture.EmployeeUserId, document.DocumentId,
+            new ShareTarget { UserId = DocumentTestFixture.OutsiderUserId });
+
+        Assert.True(success);
+        var share = await _fixture.Context.DocumentShares.SingleOrDefaultAsync(s => s.DocumentId == document.DocumentId);
+        Assert.NotNull(share);
+        Assert.Equal(DocumentTestFixture.OutsiderUserId, share!.SharedWithUserId);
+        Assert.Null(share.SharedWithDepartment);
+        Assert.True(share.NotificationSent);
+    }
+
+    [Fact]
+    public async Task ShareAsync_CreatesShare_ForDepartmentTarget()
+    {
+        var document = SeedDocument("Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        var success = await _sut.ShareAsync(DocumentTestFixture.EmployeeUserId, document.DocumentId,
+            new ShareTarget { Department = "Sales" });
+
+        Assert.True(success);
+        var share = await _fixture.Context.DocumentShares.SingleOrDefaultAsync(s => s.DocumentId == document.DocumentId);
+        Assert.NotNull(share);
+        Assert.Equal("Sales", share!.SharedWithDepartment);
+        Assert.Null(share.SharedWithUserId);
+    }
+
+    [Fact]
+    public async Task ShareAsync_Denied_WhenCallerIsNotOwner()
+    {
+        var document = SeedDocument("Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        var success = await _sut.ShareAsync(DocumentTestFixture.OutsiderUserId, document.DocumentId,
+            new ShareTarget { UserId = DocumentTestFixture.ProjectManagerUserId });
+
+        Assert.False(success);
+        Assert.Empty(_fixture.Context.DocumentShares);
+    }
+
+    [Fact]
+    public async Task ShareAsync_Denied_WhenBothUserAndDepartmentSet()
+    {
+        var document = SeedDocument("Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        var success = await _sut.ShareAsync(DocumentTestFixture.EmployeeUserId, document.DocumentId,
+            new ShareTarget { UserId = DocumentTestFixture.OutsiderUserId, Department = "Sales" });
+
+        Assert.False(success);
+    }
+
+    [Fact]
+    public async Task ShareAsync_Denied_WhenNeitherUserNorDepartmentSet()
+    {
+        var document = SeedDocument("Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        var success = await _sut.ShareAsync(DocumentTestFixture.EmployeeUserId, document.DocumentId, new ShareTarget());
+
+        Assert.False(success);
+    }
+
+    [Fact]
+    public async Task ShareAsync_SendsNotification_ToDirectRecipient()
+    {
+        var document = SeedDocument("Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        await _sut.ShareAsync(DocumentTestFixture.EmployeeUserId, document.DocumentId,
+            new ShareTarget { UserId = DocumentTestFixture.OutsiderUserId });
+
+        var notifications = await _fixture.Context.Notifications
+            .Where(n => n.UserId == DocumentTestFixture.OutsiderUserId && n.Type == NotificationType.DocumentShared)
+            .ToListAsync();
+        Assert.Single(notifications);
+    }
+
+    [Fact]
+    public async Task ShareAsync_SendsNotifications_ToAllDepartmentMembers_ExceptSharer()
+    {
+        // EmployeeUserId (4) shares with their own department "Engineering", which also contains
+        // ProjectManagerUserId (2) and TeamLeadUserId (3).
+        var document = SeedDocument("Doc", DocumentCategories.PersonalFiles, DocumentTestFixture.EmployeeUserId);
+
+        await _sut.ShareAsync(DocumentTestFixture.EmployeeUserId, document.DocumentId,
+            new ShareTarget { Department = "Engineering" });
+
+        var notifiedUserIds = await _fixture.Context.Notifications
+            .Where(n => n.Type == NotificationType.DocumentShared)
+            .Select(n => n.UserId)
+            .ToListAsync();
+
+        Assert.Contains(DocumentTestFixture.ProjectManagerUserId, notifiedUserIds);
+        Assert.Contains(DocumentTestFixture.TeamLeadUserId, notifiedUserIds);
+        Assert.DoesNotContain(DocumentTestFixture.EmployeeUserId, notifiedUserIds);
+        Assert.DoesNotContain(DocumentTestFixture.OutsiderUserId, notifiedUserIds);
+    }
+
+    [Fact]
+    public async Task GetSharedWithMeAsync_ReturnsDirectlySharedDocuments()
+    {
+        var document = SeedDocument("Shared Directly", DocumentCategories.PersonalFiles, DocumentTestFixture.ProjectManagerUserId);
+        await _sut.ShareAsync(DocumentTestFixture.ProjectManagerUserId, document.DocumentId,
+            new ShareTarget { UserId = DocumentTestFixture.OutsiderUserId });
+
+        var result = await _sut.GetSharedWithMeAsync(DocumentTestFixture.OutsiderUserId);
+
+        Assert.Single(result);
+        Assert.Equal("Shared Directly", result[0].Title);
+    }
+
+    [Fact]
+    public async Task GetSharedWithMeAsync_ReturnsDepartmentSharedDocuments()
+    {
+        var document = SeedDocument("Shared With Sales", DocumentCategories.PersonalFiles, DocumentTestFixture.ProjectManagerUserId);
+        await _sut.ShareAsync(DocumentTestFixture.ProjectManagerUserId, document.DocumentId,
+            new ShareTarget { Department = "Sales" });
+
+        var result = await _sut.GetSharedWithMeAsync(DocumentTestFixture.OutsiderUserId);
+
+        Assert.Single(result);
+        Assert.Equal("Shared With Sales", result[0].Title);
+    }
+
+    [Fact]
+    public async Task GetSharedWithMeAsync_DoesNotReturnUnsharedDocuments()
+    {
+        SeedDocument("Not Shared", DocumentCategories.PersonalFiles, DocumentTestFixture.ProjectManagerUserId);
+
+        var result = await _sut.GetSharedWithMeAsync(DocumentTestFixture.OutsiderUserId);
+
+        Assert.Empty(result);
+    }
 }

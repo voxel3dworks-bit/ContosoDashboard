@@ -6,6 +6,7 @@
 @attribute [Authorize]
 @inject IDocumentService DocumentService
 @inject IProjectService ProjectService
+@inject IUserService UserService
 @inject AuthenticationStateProvider AuthenticationStateProvider
 
 <PageTitle>My Documents - ContosoDashboard</PageTitle>
@@ -139,6 +140,9 @@
                                     <button class="btn btn-sm btn-outline-secondary ms-1" @onclick="() => OpenEditModal(document)">
                                         <span class="bi bi-pencil" aria-hidden="true"></span> Edit
                                     </button>
+                                    <button class="btn btn-sm btn-outline-secondary ms-1" @onclick="() => OpenShareModal(document)">
+                                        <span class="bi bi-share" aria-hidden="true"></span> Share
+                                    </button>
                                     <button class="btn btn-sm btn-outline-danger ms-1" @onclick="() => ConfirmDelete(document)">
                                         <span class="bi bi-trash" aria-hidden="true"></span> Delete
                                     </button>
@@ -210,6 +214,76 @@
     </div>
 }
 
+@if (_shareCandidate != null)
+{
+    <div class="modal d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Share "@_shareCandidate.Title"</h5>
+                    <button type="button" class="btn-close" @onclick="CancelShare" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    @if (!string.IsNullOrEmpty(_shareErrorMessage))
+                    {
+                        <div class="alert alert-danger" role="alert">@_shareErrorMessage</div>
+                    }
+                    @if (!string.IsNullOrEmpty(_shareSuccessMessage))
+                    {
+                        <div class="alert alert-success" role="alert">@_shareSuccessMessage</div>
+                    }
+
+                    <div class="mb-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="shareMode" id="shareModeUser"
+                                   checked="@(!_shareByDepartment)" @onchange="() => _shareByDepartment = false" />
+                            <label class="form-check-label" for="shareModeUser">Share with a specific person</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="shareMode" id="shareModeDepartment"
+                                   checked="@_shareByDepartment" @onchange="() => _shareByDepartment = true" />
+                            <label class="form-check-label" for="shareModeDepartment">Share with a department</label>
+                        </div>
+                    </div>
+
+                    @if (!_shareByDepartment)
+                    {
+                        <div class="mb-3">
+                            <label class="form-label">Person</label>
+                            <select class="form-select" @bind="_shareTargetUserId">
+                                <option value="">-- Select a person --</option>
+                                @foreach (var user in _allUsers.Where(u => u.UserId != _currentUserId))
+                                {
+                                    <option value="@user.UserId">@user.DisplayName (@user.Department)</option>
+                                }
+                            </select>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="mb-3">
+                            <label class="form-label">Department</label>
+                            <select class="form-select" @bind="_shareTargetDepartment">
+                                <option value="">-- Select a department --</option>
+                                @foreach (var department in _departments)
+                                {
+                                    <option value="@department">@department</option>
+                                }
+                            </select>
+                        </div>
+                    }
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" @onclick="CancelShare" disabled="@_isSharing">Close</button>
+                    <button type="button" class="btn btn-primary" @onclick="SubmitShareAsync" disabled="@_isSharing">
+                        @(_isSharing ? "Sharing..." : "Share")
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
 <DocumentUploadModal @ref="_uploadModal"
                       CurrentUserId="_currentUserId"
                       AvailableProjects="_availableProjects"
@@ -230,6 +304,16 @@
     private bool _isDeleting;
     private string? _deleteErrorMessage;
 
+    private List<Models.User> _allUsers = new();
+    private List<string> _departments = new();
+    private DocumentSummary? _shareCandidate;
+    private bool _shareByDepartment;
+    private int? _shareTargetUserId;
+    private string? _shareTargetDepartment;
+    private bool _isSharing;
+    private string? _shareErrorMessage;
+    private string? _shareSuccessMessage;
+
     private static readonly HashSet<string> PreviewableContentTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "application/pdf", "image/jpeg", "image/png"
@@ -249,6 +333,14 @@
         {
             _currentUserId = userId;
             _availableProjects = await ProjectService.GetUserProjectsAsync(_currentUserId);
+            _allUsers = await UserService.GetAllUsersAsync();
+            _departments = _allUsers
+                .Select(u => u.Department)
+                .Where(d => !string.IsNullOrWhiteSpace(d))
+                .Distinct()
+                .OrderBy(d => d)
+                .Select(d => d!)
+                .ToList();
             await LoadDocumentsAsync();
         }
     }
@@ -381,6 +473,68 @@
             _deleteErrorMessage = "Failed to delete the document. You may not have permission.";
             StateHasChanged();
         }
+    }
+
+    private void OpenShareModal(DocumentSummary document)
+    {
+        _shareCandidate = document;
+        _shareByDepartment = false;
+        _shareTargetUserId = null;
+        _shareTargetDepartment = null;
+        _shareErrorMessage = null;
+        _shareSuccessMessage = null;
+    }
+
+    private void CancelShare()
+    {
+        _shareCandidate = null;
+    }
+
+    private async Task SubmitShareAsync()
+    {
+        if (_shareCandidate == null)
+        {
+            return;
+        }
+
+        _shareErrorMessage = null;
+        _shareSuccessMessage = null;
+
+        var target = _shareByDepartment
+            ? new ShareTarget { Department = _shareTargetDepartment }
+            : new ShareTarget { UserId = _shareTargetUserId };
+
+        if (!_shareByDepartment && _shareTargetUserId == null)
+        {
+            _shareErrorMessage = "Please select a person to share with.";
+            return;
+        }
+
+        if (_shareByDepartment && string.IsNullOrWhiteSpace(_shareTargetDepartment))
+        {
+            _shareErrorMessage = "Please select a department to share with.";
+            return;
+        }
+
+        _isSharing = true;
+        StateHasChanged();
+
+        var success = await DocumentService.ShareAsync(_currentUserId, _shareCandidate.DocumentId, target);
+
+        _isSharing = false;
+
+        if (success)
+        {
+            _shareSuccessMessage = "Document shared successfully.";
+            _shareTargetUserId = null;
+            _shareTargetDepartment = null;
+        }
+        else
+        {
+            _shareErrorMessage = "Failed to share the document. You may not have permission.";
+        }
+
+        StateHasChanged();
     }
 
     private static string FormatFileSize(long bytes)

@@ -158,15 +158,15 @@ Single project (Option 1, per plan.md) — no `frontend`/`backend` split:
 
 ### Tests for User Story 5
 
-- [ ] T040 [P] [US5] Unit tests for `DocumentService.ShareAsync` (individual-user target, department target, owner-only enforcement) and `GetSharedWithMeAsync` (direct shares plus dynamic department-membership matching) in `ContosoDashboard.Tests/Services/DocumentServiceTests.cs`
+- [X] T040 [P] [US5] Unit tests for `DocumentService.ShareAsync` (individual-user target, department target, owner-only enforcement) and `GetSharedWithMeAsync` (direct shares plus dynamic department-membership matching) in `ContosoDashboard.Tests/Services/DocumentServiceTests.cs`
 
 ### Implementation for User Story 5
 
-- [ ] T041 [US5] Implement `DocumentService.ShareAsync` (create a `DocumentShare` row, call `INotificationService` to raise a `DocumentShared` notification, mark `NotificationSent`) in `ContosoDashboard/Services/DocumentService.cs` (depends on T040)
-- [ ] T042 [US5] Implement `DocumentService.GetSharedWithMeAsync`, matching direct `SharedWithUserId` rows and department shares against the caller's current `User.Department` in `ContosoDashboard/Services/DocumentService.cs`
-- [ ] T043 [US5] Add a share dialog (individual user picker or department entry) to `ContosoDashboard/Pages/Documents.razor`
-- [ ] T044 [US5] Create `SharedWithMe.razor` (`@page "/documents/shared-with-me"`, `[Authorize]`) listing documents shared with the current user in `ContosoDashboard/Pages/SharedWithMe.razor`
-- [ ] T045 [US5] Render the new `DocumentShared`/`DocumentAddedToProject` notification types (icon/label) in `ContosoDashboard/Pages/Notifications.razor`
+- [X] T041 [US5] Implement `DocumentService.ShareAsync` (create a `DocumentShare` row, call `INotificationService` to raise a `DocumentShared` notification, mark `NotificationSent`) in `ContosoDashboard/Services/DocumentService.cs` (depends on T040)
+- [X] T042 [US5] Implement `DocumentService.GetSharedWithMeAsync`, matching direct `SharedWithUserId` rows and department shares against the caller's current `User.Department` in `ContosoDashboard/Services/DocumentService.cs`
+- [X] T043 [US5] Add a share dialog (individual user picker or department entry) to `ContosoDashboard/Pages/Documents.razor`
+- [X] T044 [US5] Create `SharedWithMe.razor` (`@page "/documents/shared-with-me"`, `[Authorize]`) listing documents shared with the current user in `ContosoDashboard/Pages/SharedWithMe.razor`
+- [X] T045 [US5] Render the new `DocumentShared`/`DocumentAddedToProject` notification types (icon/label) in `ContosoDashboard/Pages/Notifications.razor`
 
 **Checkpoint**: User Stories 1–5 work independently — sharing and cross-user visibility are complete.
 

@@ -35,11 +35,12 @@
                             <div class="d-flex w-100 justify-content-between align-items-start">
                                 <div class="flex-grow-1">
                                     <div class="d-flex align-items-center mb-1">
+                                        <span class="@GetTypeIcon(notification.Type) me-2" aria-hidden="true"></span>
                                         <h6 class="mb-0 me-2">@notification.Title</h6>
                                         <span class="badge bg-@GetPriorityColor(notification.Priority)">
                                             @notification.Priority
                                         </span>
-                                        <span class="badge bg-secondary ms-2">@notification.Type</span>
+                                        <span class="badge bg-secondary ms-2">@GetTypeLabel(notification.Type)</span>
                                     </div>
                                     <p class="mb-1">@notification.Message</p>
                                     <small class="text-muted">@GetRelativeTime(notification.CreatedDate)</small>
@@ -124,6 +125,40 @@
             }
             await LoadNotifications();
         }
+    }
+
+    private string GetTypeIcon(NotificationType type)
+    {
+        return type switch
+        {
+            NotificationType.TaskAssignment => "bi bi-check2-square",
+            NotificationType.TaskUpdate => "bi bi-arrow-repeat",
+            NotificationType.TaskDueSoon => "bi bi-alarm",
+            NotificationType.TaskCompleted => "bi bi-check-circle",
+            NotificationType.TaskComment => "bi bi-chat-left-text",
+            NotificationType.ProjectUpdate => "bi bi-folder",
+            NotificationType.SystemAnnouncement => "bi bi-megaphone",
+            NotificationType.DocumentShared => "bi bi-share",
+            NotificationType.DocumentAddedToProject => "bi bi-file-earmark-plus",
+            _ => "bi bi-bell"
+        };
+    }
+
+    private string GetTypeLabel(NotificationType type)
+    {
+        return type switch
+        {
+            NotificationType.TaskAssignment => "Task Assignment",
+            NotificationType.TaskUpdate => "Task Update",
+            NotificationType.TaskDueSoon => "Task Due Soon",
+            NotificationType.TaskCompleted => "Task Completed",
+            NotificationType.TaskComment => "Task Comment",
+            NotificationType.ProjectUpdate => "Project Update",
+            NotificationType.SystemAnnouncement => "System Announcement",
+            NotificationType.DocumentShared => "Document Shared",
+            NotificationType.DocumentAddedToProject => "New Project Document",
+            _ => type.ToString()
+        };
     }
 
     private string GetPriorityColor(NotificationPriority priority)

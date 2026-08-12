@@ -1,0 +1,147 @@
+@page "/documents/shared-with-me"
+@using ContosoDashboard.Services
+@using Microsoft.AspNetCore.Authorization
+@using System.Security.Claims
+@attribute [Authorize]
+@inject IDocumentService DocumentService
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>Shared with Me - ContosoDashboard</PageTitle>
+
+<div class="container-fluid">
+    <div class="row mb-4">
+        <div class="col">
+            <h1>Shared with Me</h1>
+            <p class="text-muted">Documents that other people have shared directly with you or with your department.</p>
+        </div>
+    </div>
+
+    @if (_isLoading)
+    {
+        <p><em>Loading...</em></p>
+    }
+    else if (_documents.Count == 0)
+    {
+        <div class="alert alert-info">No documents have been shared with you yet.</div>
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Title</th>
+                        <th>Category</th>
+                        <th>Shared By</th>
+                        <th>Upload Date</th>
+                        <th>File Size</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var document in _documents)
+                    {
+                        <tr>
+                            <td>@document.Title</td>
+                            <td><span class="badge bg-secondary">@document.Category</span></td>
+                            <td>@document.UploaderName</td>
+                            <td>@document.UploadDate.ToLocalTime().ToString("MMM dd, yyyy h:mm tt")</td>
+                            <td>@FormatFileSize(document.FileSizeBytes)</td>
+                            <td>
+                                <a class="btn btn-sm btn-outline-primary" href="/documents/@document.DocumentId/download" target="_blank">
+                                    <span class="bi bi-download" aria-hidden="true"></span> Download
+                                </a>
+                                @if (IsPreviewable(document.FileType))
+                                {
+                                    <button class="btn btn-sm btn-outline-secondary ms-1" @onclick="() => ShowPreview(document)">
+                                        <span class="bi bi-eye" aria-hidden="true"></span> Preview
+                                    </button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+@if (_previewDocument != null)
+{
+    <div class="modal d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-lg modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">@_previewDocument.Title</h5>
+                    <button type="button" class="btn-close" @onclick="ClosePreview" aria-label="Close"></button>
+                </div>
+                <div class="modal-body text-center">
+                    @if (IsImage(_previewDocument.FileType))
+                    {
+                        <img src="/documents/@_previewDocument.DocumentId/preview" alt="@_previewDocument.Title" class="img-fluid" />
+                    }
+                    else
+                    {
+                        <iframe src="/documents/@_previewDocument.DocumentId/preview" title="@_previewDocument.Title" style="width: 100%; height: 70vh; border: none;"></iframe>
+                    }
+                </div>
+                <div class="modal-footer">
+                    <a class="btn btn-primary" href="/documents/@_previewDocument.DocumentId/download" target="_blank">
+                        <span class="bi bi-download" aria-hidden="true"></span> Download
+                    </a>
+                    <button type="button" class="btn btn-secondary" @onclick="ClosePreview">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private int _currentUserId;
+    private List<DocumentSummary> _documents = new();
+    private bool _isLoading = true;
+    private DocumentSummary? _previewDocument;
+
+    private static readonly HashSet<string> PreviewableContentTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "application/pdf", "image/jpeg", "image/png"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        var userIdClaim = authState.User.FindFirst(ClaimTypes.NameIdentifier);
+        if (userIdClaim != null && int.TryParse(userIdClaim.Value, out var userId))
+        {
+            _currentUserId = userId;
+            var result = await DocumentService.GetSharedWithMeAsync(_currentUserId);
+            _documents = result.ToList();
+        }
+
+        _isLoading = false;
+    }
+
+    private void ShowPreview(DocumentSummary document)
+    {
+        _previewDocument = document;
+    }
+
+    private void ClosePreview()
+    {
+        _previewDocument = null;
+    }
+
+    private static bool IsPreviewable(string fileType) => PreviewableContentTypes.Contains(fileType);
+
+    private static bool IsImage(string fileType) => fileType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);
+
+    private static string FormatFileSize(long bytes)
+    {
+        return bytes switch
+        {
+            < 1024 => $"{bytes} B",
+            < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",
+            _ => $"{bytes / (1024.0 * 1024.0):F1} MB"
+        };
+    }
+}
